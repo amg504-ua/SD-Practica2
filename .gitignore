@@ -1,0 +1,221 @@
+# ============================================================
+# WATER MANAGEMENT - .gitignore
+# Diseño de Sistemas Distribuidos - UA 2026/2027
+# ============================================================
+
+
+# ============================================================
+# PYTHON
+# ============================================================
+
+# Bytecode / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Cython
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+
+# Python package metadata
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ============================================================
+# TESTING / COVERAGE
+# ============================================================
+
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.coverage.xml
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pyre/
+
+
+# ============================================================
+# ENVIRONMENT VARIABLES / SECRETS
+# ============================================================
+
+.env
+.env.*
+!.env.example
+
+# Local secrets
+*.pem
+*.key
+*.crt
+
+# Credentials / tokens
+credentials.json
+secrets.json
+
+
+# ============================================================
+# SQLITE / LOCAL DATABASES
+# ============================================================
+
+*.db
+*.sqlite
+*.sqlite3
+
+# SQLite temporary files
+*.db-journal
+*.db-wal
+*.db-shm
+
+
+# ============================================================
+# LOGS
+# ============================================================
+
+*.log
+logs/
+log/
+*.log.*
+
+# ============================================================
+# DOCKER
+# ============================================================
+
+# Local Docker overrides
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# Docker local data
+.docker/
+docker-data/
+
+# Do NOT ignore:
+# Dockerfile
+# compose.yaml
+# docker-compose.yml
+
+
+# ============================================================
+# RAILWAY
+# ============================================================
+
+# Railway local/project configuration
+.railway/
+
+# Do NOT ignore railway.json / railway.toml if you decide to
+# keep deployment configuration in the repository.
+
+
+# ============================================================
+# IDE / EDITORS
+# ============================================================
+
+# VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# JetBrains
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+
+
+# ============================================================
+# OPERATING SYSTEM
+# ============================================================
+
+# Linux
+.directory
+.Trash-*
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+
+
+# ============================================================
+# TEMPORARY FILES
+# ============================================================
+
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# Python temporary files
+*.pyc
+
+
+# ============================================================
+# GENERATED / LOCAL FILES
+# ============================================================
+
+# Local development files
+tmp/
+temp/
+.cache/
+
+# Generated reports / exports
+reports/generated/
+output/
+
+
+# ============================================================
+# LOCAL DEVELOPMENT CONFIGURATION
+# ============================================================
+
+# Personal configuration
+config.local.*
+settings.local.*
+
+# Local test data
+data/local/
