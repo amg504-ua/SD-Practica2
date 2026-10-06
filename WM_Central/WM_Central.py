@@ -77,6 +77,14 @@ def servidor_sockets(puerto):
         conn, addr = servidor.accept()
         thread = threading.Thread(target=handle_client, args=(conn, addr))
         thread.start()
+
+def main():
+    print("WM_Central iniciado")
+
+
+if __name__ == "__main__":
+    main()
+
 #esto de abajo es el main
 def central(Puerto, IP, Puerto_Broker):
     '''Esto seguramente lo divida en dos funciones diferentes, pero
