@@ -33,7 +33,7 @@ if  (len(sys.argv) == 5):
 
         mensaje = f"REGISTRO#{ID_Estacion}#{Ubicacion}"
         print("Envio al servidor: ", mensaje)
-        send(mensaje)#enviar la orden
+        send(cliente, mensaje)#enviar la orden
         respuesta = cliente.recv(2048).decode(FORMAT)#esperar
         print(f"Recibido: {respuesta}")
 

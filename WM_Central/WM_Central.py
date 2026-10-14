@@ -65,7 +65,7 @@ def handle_client(conn, addr):
     conn.close()
 
 def servidor_sockets(puerto):
-    SERVER = socket.gethostbyname(socket.gethostbyname())
+    SERVER = socket.gethostbyname(socket.gethostname())
     ADDR = (SERVER, puerto)
 
     servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -78,12 +78,12 @@ def servidor_sockets(puerto):
         thread = threading.Thread(target=handle_client, args=(conn, addr))
         thread.start()
 
-def main():
-    print("WM_Central iniciado")
+#def main():
+#    print("WM_Central iniciado")
 
 
-if __name__ == "__main__":
-    main()
+#if __name__ == "__main__":
+#    main()
 
 #esto de abajo es el main
 def central(Puerto, IP, Puerto_Broker):
@@ -103,7 +103,9 @@ def central(Puerto, IP, Puerto_Broker):
             no se puede hacer o es más compleja.
     '''
     '''Arrancar el Hilo de Sockets'''
-    #crearHiloSockets(Puerto)
+    hilo_sockets = threading.Thread(target=servidor_sockets, args=(Puerto,))
+    hilo_sockets.daemon = True
+    hilo_sockets.start()
     '''Arrancar Hilo Kafka'''
     #crearHiloKafka(IP, Puerto_Broker)
     '''Iniciar Panel de Control'''
@@ -111,11 +113,11 @@ def central(Puerto, IP, Puerto_Broker):
     #quitar los comentarios estos de aqui para probarlo
     #es provisional pq en la practica dice que hay que pasar
     #toda esta info con kafka
-    #try:
-     #   while True:
-      #      pass
-    #except KeyboardInterrupt:
-     #   print("Adios")
+    try:
+        while True:
+            pass
+    except KeyboardInterrupt:
+        print("Adios")
 
-    #if __name__ == "__main__":
-     #   central(5050, "127.0.0.1", 9092)
+if __name__ == "__main__":
+    central(5050, "127.0.0.1", 9092)
