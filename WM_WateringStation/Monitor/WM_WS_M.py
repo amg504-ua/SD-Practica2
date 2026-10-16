@@ -1,7 +1,8 @@
 import socket
 import sys
+import time
+import threading
 
-HEADER = 64
 FORMAT = 'utf-8'
 
 def send(socketC, msg):
