@@ -1,6 +1,7 @@
 '''Cada paso que haga la central, deberá notificarlo al Operario.'''
 import socket
 import threading
+import BD
 
 HEADER = 64
 FORMAT = 'utf-8'
@@ -30,7 +31,8 @@ def procesarPeticionPanel():
 
 def handle_client(conn, addr):
     print(f"[NUEVA CONEXION] {addr} connected.")
-
+    #variable para guardar la estacion en la bd
+    id_estacionA = None 
     connected = True
     while connected:#infinito, cambiar para la practica
         try: 
@@ -47,6 +49,8 @@ def handle_client(conn, addr):
                     ubicacion = partes[2]
                     if registro == "REGISTRO":
                         print(f"Estacion: {id_estacion} en {ubicacion}")
+                        #guardar en la bd
+                        BD.guardar_estacion(id_estacion, ubicacion)
                         respuesta = "STATUS#OK#Estacion registrada correctamente"
                     else:
                         respuesta = "STATUS#ERROR#Estacion no registrada correctamente"
@@ -90,6 +94,10 @@ def central(Puerto, IP, Puerto_Broker):
     '''Esto seguramente lo divida en dos funciones diferentes, pero
     es para que se entienda el concepto.'''
     #cargarymostrarDatosBD() 
+    BD.inicializar()
+    estaciones = BD.devolver_estaciones()
+    for estacion in estaciones:
+        print(f"Estacion : {estacion[0]}, ubicacion: {estacion[1]}, estado: {estacion[2]} ")
     '''
         Primero conectara con la BD y cargará los datos.
         Como hasta que una estacion no establezca conexión real
