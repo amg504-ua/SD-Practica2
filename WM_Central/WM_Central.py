@@ -57,8 +57,8 @@ def handle_client(conn, addr):
                 cabecera_respuesta = str(len(respuesta_bytes)).encode(FORMAT).ljust(HEADER, b" ")
                 conn.sendall(cabecera_respuesta + respuesta_bytes)
 
-    except (ConnectionError, OSError) as exc:
-        print(f"[ERROR DE CONEXIÓN] {addr}: {exc}", flush=True)
+        except (ConnectionError, OSError) as exc:
+            print(f"[ERROR DE CONEXIÓN] {addr}: {exc}", flush=True)
 
     print(f"[CONEXIÓN CERRADA] {addr}", flush=True)
 
