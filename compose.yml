@@ -1,0 +1,32 @@
+services:
+  wm-central:
+    build:
+      context: .
+      dockerfile: WM_Central/Dockerfile
+    image: wm-central:dev
+    container_name: wm-central
+    ports:
+      - "5000:5000"
+    env_file: 
+      - .env
+
+  wm-fo:
+    build:
+      context: .
+      dockerfile: WM_FieldOperator/Dockerfile
+    image: wm-fo:dev
+    container_name: wm-fo
+
+  wm-engine:
+    build:
+      context: .
+      dockerfile: WM_WateringStation/Engine/Dockerfile
+    image: wm-engine:dev
+    container_name: wm-engine
+
+  wm-monitor:
+    build:
+      context: .
+      dockerfile: WM_WateringStation/Monitor/Dockerfile
+    image: wm-monitor:dev
+    container_name: wm-monitor
