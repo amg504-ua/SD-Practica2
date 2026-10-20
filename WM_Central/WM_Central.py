@@ -2,7 +2,10 @@
 import socket
 import threading
 import BD
-from Common.config import load_central_config
+import sys
+import os
+#sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+#from Common.config import load_central_config
 
 HEADER = 64
 FORMAT = 'utf-8'
@@ -29,38 +32,71 @@ def handle_client(conn, addr):
     connected = True
     while connected:#infinito, cambiar para la practica
         try: 
-            msg_length = conn.recv(HEADER).decode(FORMAT)
+            msg_length = conn.recv(2048).decode(FORMAT)
             if msg_length:
-                msg_length = int(msg_length)
-                msg = conn.recv(msg_length).decode(FORMAT)
-                print(f" He recibido del cliente [{addr}] el mensaje: {msg}")
+                for msg in msg_length.strip().split("\n"):
+                    msg = msg.strip()
+                    if not msg:
+                        continue
+                    print(f" He recibido del cliente [{addr}] el mensaje: {msg}")
 
-                partes = msg.split("#")
-
-                if len(partes) == 3:
-                    registro, id_estacion, ubicacion = partes
-
-                    if registro == "REGISTRO":
+                    partes = msg.split("#")
+                    tipo = partes[0]
+                    #si la estacion se registra
+                    if tipo == "REGISTRO" and len(partes) == 3:
+                        id_estacion = partes[1]
+                        ubicacion = partes[2]
+                        id_estacionA = id_estacion
+                        
                         print(f"Estacion: {id_estacion} en {ubicacion}")
                         #guardar en la bd
                         BD.guardar_estacion(id_estacion, ubicacion)
 
-                        respuesta = "STATUS#OK#Estacion registrada correctamente"
-                    else:
-                        respuesta = (
-                            "STATUS#ERROR#Tipo de petición no reconocido"
-                        )
-                else:
-                    respuesta = "STATUS#ERROR#Formato incorrecto"
+                        respuesta = f"REGISTRO_OK#{id_estacion}"
+                    
+                    #si la estacion se quiere conectar y ya esta registrada
+                    elif tipo == "CONEXION" and len(partes) == 2:
+                        id_estacion = partes[1]
+                        id_estacionA = id_estacion
+                        BD.modificar_estados(id_estacion, "Available")
+                        print(f"Estacion available: {id_estacion}")
+                        respuesta = f"CONEXION_OK#{id_estacion}"
 
-                respuesta_bytes = respuesta.encode(FORMAT)
-                cabecera_respuesta = str(len(respuesta_bytes)).encode(FORMAT).ljust(HEADER, b" ")
-                conn.sendall(cabecera_respuesta + respuesta_bytes)
+                    #si la estacion se quiere conectar y ya esta registrada
+                    elif tipo == "AVISO_FUGA" and len(partes) == 2:
+                        id_estacion = partes[1]
+                        BD.modificar_estados(id_estacion, "Leak")
+                        print(f"Estacion en fuga: {id_estacion}")
+                        respuesta = f"AVISO_FUGA_RECIBIDO#{id_estacion}"
+                    
+                    #si la estacion se quiere conectar y ya esta registrada
+                    elif tipo == "FUGA_RESUELTA" and len(partes) == 2:
+                        id_estacion = partes[1]
+                        BD.modificar_estados(id_estacion, "Available")
+                        print(f"Estacion CON FUGA RESUELTA: {id_estacion}")
+                        respuesta = f"FUGA_RESUELTA_CONFIRMACION#{id_estacion}"
+                    
+                    elif tipo in ["ORDEN_OoO_RECIBIDO", "ORDEN_ACTIVACION_RECIBIDA"]: 
+                        print(f"Estacion available: {id_estacion}")
+                        respuesta = f"CONEXION_OK#{id_estacion}"
+
+                    else:
+                        respuesta = F"ERROR#Formato incorrecto {msg}"
+
+                    conn.send((respuesta + "\n").encode(FORMAT))
+            else:
+                print(f"DESCONEXION DEL MONITOR EN {addr}")
+                connected = False
 
         except (ConnectionError, OSError) as exc:
             print(f"[ERROR DE CONEXIÓN] {addr}: {exc}", flush=True)
 
-    print(f"[CONEXIÓN CERRADA] {addr}", flush=True)
+    if id_estacionA is not None:
+        BD.modificar_estados(id_estacionA, "Disconnected")
+        print(f"Estacion {id_estacionA} pasa a desconectada")
+    
+    conn.close()
+    print(f"Conecion cerrada {addr}", flush=True)
 
 def servidor_sockets(puerto):
     SERVER = socket.gethostbyname(socket.gethostname())
@@ -132,11 +168,12 @@ def central(Puerto, IP, Puerto_Broker):
     #quitar los comentarios estos de aqui para probarlo
     #es provisional pq en la practica dice que hay que pasar
     #toda esta info con kafka
-    #try:
-     #   while True:
-      #      pass
-    #except KeyboardInterrupt:
-     #   print("Adios")
+    try:
+        while True:
+            import time
+            time.sleep(1)
+    except KeyboardInterrupt:
+       print("Adios")
 
-    if __name__ == "__main__":
-       central(5050, "127.0.0.1", 9092)
+if __name__ == "__main__":
+   central(5050, "127.0.0.1", 9092)
