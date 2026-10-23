@@ -16,13 +16,13 @@ def inicializar():
     creador = conexion.cursor()
 
     #crear la tabla dde operarios
-    creador.execute('''
-    CREATE TABLE IF NOT EXISTS OPERARIOS (
-            id_operario TEXT PRIMARY KEY,
-            nombre_usuario TEXT NOT NULL,
-            contraseña TEXT NOT NULL
-        )
-    ''')
+    #creador.execute('''
+    #CREATE TABLE IF NOT EXISTS OPERARIOS (
+    #        id_operario TEXT PRIMARY KEY,
+    #        nombre_usuario TEXT NOT NULL,
+    #        contraseña TEXT NOT NULL
+    #    )
+    #''')
     #crear la tabla dde estaciones de riego
     creador.execute('''
     CREATE TABLE IF NOT EXISTS WATERING_STATIONS (
