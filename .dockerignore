@@ -1,0 +1,24 @@
+# Variables de entorno y secretos
+.env
+.env.*
+
+# Control de versiones
+.git
+.gitignore
+
+# Archivos temporales de Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Entornos virtuales
+.venv/
+venv/
+
+# Datos locales
+data/
+
+# Documentación que no necesita la imagen
+Docs/
+*.pdf
+*.pptx
