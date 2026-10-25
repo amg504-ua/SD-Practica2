@@ -1,10 +1,13 @@
 import argparse
-#import threading
+import threading
 import uuid
 from Common.config import load_field_operator_config
 from kafka import KafkaConsumer, KafkaProducer
 
 estaciones = {}
+bloqueo_estaciones = threading.Lock()
+solicitud_activa = None
+bloqueo_solicitud = threading.Lock()
 
 #======= CONSUMIDORES =======#
 
@@ -40,6 +43,96 @@ def escuchar_mensajes(consumidores):
 
     except KeyboardInterrupt:
         print("\nInterrupción solicitada por el usuario.")
+
+def escuchar_eventos(consumidor, detener, id_operador):    
+    """Interpreta los eventos recibidos desde WM_Central"""
+
+    formatos = {
+        "RIEGO_AUTORIZADO": 4,
+        "RIEGO_DENEGADO": 5,
+        "DATOS_RIEGO": 6,
+        "RESUMEN_RIEGO": 6,
+        "RIEGO_INTERRUMPIDO": 5,
+    }
+
+    try:
+        while not detener.is_set():
+            mensajes = consumidor.poll(timeout_ms=500)
+
+            for registros in mensajes.values():
+                for mensaje in registros:
+                    campos = mensaje.value.split("#")
+
+                    if len(campos) < 4:
+                        print("\n[Error] Mensaje de Central no válido.")
+                        continue
+
+                    id_peticion = campos[0]
+                    tipo_evento = campos[1]
+
+                    if tipo_evento not in formatos:
+                        print(f"\n[Error] Evento desconocido: {tipo_evento}")
+                        continue
+
+                    if len(campos) != formatos[tipo_evento]:
+                        print(f"\n[Error] Formato incorrecto: {mensaje.value}")
+                        continue
+
+                    id_operario_evento = campos[2]
+                    id_estacion = campos[3]
+
+                    if id_operario_evento != str(id_operador):
+                        continue
+
+                #GESTIONAMOS LOS TIPOS DE EVENTOS
+                
+                    if tipo_evento == "RIEGO_AUTORIZADO":
+                        print(
+                            f"\n[Central] Riego Autorizado. "
+                            f"Petición: {id_peticion}"
+                            f"Estación: {id_estacion}"
+                        )
+                    elif tipo_evento == "RIEGO_DENEGADO":
+                        motivo = campos[4]
+                        print(
+                            f"\n[Central] Riego denegado. "
+                            f"Petición: {id_peticion}"
+                            f"Estación: {id_estacion}. "
+                            f"Motivo: {motivo}"
+                        )
+
+                    elif tipo_evento == "DATOS_RIEGO":
+                        caudal = campos[4]
+                        volumen = campos[5]
+                        print(
+                            f"\n[Central] Evolución del riego de la petición {id_peticion} "
+                            f"en la estación {id_estacion}: "
+                            f"caudal = {caudal} L/min; "
+                            f"volumen acumulado = {volumen} L."
+                        )
+
+                    elif tipo_evento == "RESUMEN_RIEGO":
+                        tiempo = campos[4]
+                        litros = campos[5]
+                        print(
+                            f"\n[Central] Riego finalizado "
+                            f"en la estación {id_estacion}. "
+                            f"Duración: {tiempo} s; "
+                            f"litros suministrados: {litros} L."
+                            f"Petición: {id_peticion}"
+                        )
+
+                    elif tipo_evento == "RIEGO_INTERRUMPIDO":
+                        motivo = campos[4]
+                        print(
+                            f"\n[Central] Riego interrumpido "
+                            f"en la estación {id_estacion}. "
+                            f"Motivo: {motivo}"
+                            f"Petición: {id_peticion}"
+                        )
+
+    finally:
+        consumidor.close()
 
 #======= PRODUCTORES =======#
 
@@ -97,8 +190,14 @@ def solicitar_riego():
         except ValueError:
             print("Entrada no válida. Introduce un número entero.")
 
-def gestionar_solicitud_riego(productor, id_operador, id_estacion):
-    """Solicita los datos del riego y envía la petición a Central."""
+def gestionar_solicitud_riego(productor, id_operador):
+    """Permite elegir una estación y solicitar su riego."""
+
+    id_estacion = seleccionar_estacion()
+
+    if id_estacion is None:
+        print("Solicitud cancelada.")
+        return None
 
     tiempo_riego = solicitar_riego()
 
@@ -110,36 +209,118 @@ def gestionar_solicitud_riego(productor, id_operador, id_estacion):
 
 #======= MENÚ ESTACIONES =======#
 
-def actualizar_estacion(id_estacion, estado=None, caudal=None, volumen_acumulado=None):
-    """Añade una estación o actualiza los datos que recibimos de ella."""
-    
-    if id_estacion not in estaciones:
-        estaciones[id_estacion] = {}
-    datos = estaciones[id_estacion]
+def actualizar_estacion(id_estacion, estado, ubicacion, caudal, volumen_acumulado):
+    """Guarda el estado completo recibido de una estación."""
 
-    if estado is not None:
-        datos["estado"] = estado
+    with bloqueo_estaciones:
+        estaciones[id_estacion] = {
+            "estado": estado,
+            "ubicacion": ubicacion,
+            "caudal": caudal,
+            "volumen_acumulado": volumen_acumulado,
+        }
 
-    if caudal is not None:
-        datos["caudal"] = caudal
+def escuchar_estados(consumidor, detener):
+    """Recibe estados y actualiza las estaciones continuamente."""
 
-    if volumen_acumulado is not None:
-        datos["volumen_acumulado"] = volumen_acumulado
+    try:
+        while not detener.is_set():
+            mensajes = consumidor.poll(timeout_ms=500)
+
+            for registros in mensajes.values():
+                for mensaje in registros:
+                    campos = mensaje.value.split("#")
+
+                    if len(campos) != 6:
+                        print("Mensaje de estado no válido.")
+                        continue
+
+                    (id_estacion, estado, ubicacion, caudal,
+                     volumen, id_operario) = campos
+
+                    try:
+                        caudal = None if caudal == "-" else float(caudal)
+                        volumen = None if volumen == "-" else float(volumen)
+                    except ValueError:
+                        print("Caudal o volumen no válido.")
+                        continue
+
+                    actualizar_estacion(id_estacion,estado,ubicacion,caudal,volumen)
+
+                    mostrar_estaciones()
+
+    finally:
+        consumidor.close()
 
 def mostrar_estaciones():
-    """Muestra las estaciones que conocemos."""
+    """Muestra una copia de las estaciones que conocemos."""
+
+    with bloqueo_estaciones:
+        copia_estaciones = {
+            id_estacion: datos.copy()
+            for id_estacion, datos in estaciones.items()
+        }
+
+    if not copia_estaciones:
+        print("No hay estaciones registradas.")
+        return
+
+    print("\n--- Estaciones de Riego ---")
+
+    for id_estacion, datos in copia_estaciones.items():
+        estado = datos.get("estado", "DESCONOCIDO")
+        ubicacion = datos.get("ubicacion", "N/D")
+        caudal = datos.get("caudal", "N/D")
+        volumen = datos.get("volumen_acumulado", "N/D")
+
+        print(
+            f"{id_estacion} | {ubicacion} | {estado} | "
+            f"Caudal: {caudal} | Volumen acumulado: {volumen}"
+        )
+
+def estacion_disponible(id_estacion):
+    """Comprueba si una estación existe y está disponible"""
+
+    with bloqueo_estaciones:
+        datos = estaciones.get(id_estacion)
+
+        if datos is None:
+            return False
+
+        return datos.get("estado") == "DISPONIBLE"
+
+def seleccionar_estacion():
+    """Permite al operario elegir una estación por su identificador."""
+
+    mostrar_estaciones()
+
+    if not estaciones:
+        print("No hay estaciones disponibles para seleccionar.")
+        return None
+
+    while True:
+
+        id_estacion = input("\nIntroduce el identificador de la estación que quieres seleccionar (o 'salir'): ").strip()
+
+        if id_estacion.lower() == "salir":
+            return None
+        
+        if not estacion_disponible(id_estacion):
+            print("La estación no está disponible para regar.")
+            continue
+
+        return id_estacion
 
 #======= INTERFAZ =======#
 
-#def cargar_interfaz_grafica():
+def cargar_interfaz_grafica():
+    """Interfaz Gráfica del FO"""
 
 #======= MAIN =======#
 
 def main(id_operador, ip, puerto_kafka):
-
     config = load_field_operator_config()
 
-    # Si no se indican argumentos, usamos los valores del .env.
     if ip is None:
         ip = config.kafka_host
     if puerto_kafka is None:
@@ -149,25 +330,68 @@ def main(id_operador, ip, puerto_kafka):
     print(f"Broker Kafka: {ip}:{puerto_kafka}")
 
     consumidores = []
+    detener = threading.Event()
+    hilos = []
+    productor = None
 
     try:
+        # Creamos un consumidor para cada topic.
         consumidor_eventos = crear_consumidor_kafka(id_operador, ip, puerto_kafka, "ce.eventos.fo")
-        consumidor_estados = crear_consumidor_kafka(id_operador, ip, puerto_kafka, "ce.estados.fo")
-
         consumidores.append(consumidor_eventos)
+
+        consumidor_estados = crear_consumidor_kafka(id_operador, ip, puerto_kafka, "ce.estados.fo")
         consumidores.append(consumidor_estados)
 
-        print("Consumidores Kafka creados correctamente.")
+        productor = crear_productor_kafka(ip, puerto_kafka)
 
-        escuchar_mensajes(consumidores)
+        print("Conexiones Kafka creadas correctamente.")
+
+        # Creamos los hilos que escucharán los topics.
+        hilo_eventos = threading.Thread(target=escuchar_eventos,args=(consumidor_eventos, detener, id_operador),name="hilo-eventos")
+
+        hilo_estados = threading.Thread(target=escuchar_estados,args=(consumidor_estados, detener),name="hilo-estados")
+
+        hilos.extend([hilo_eventos, hilo_estados])
+
+        # Iniciamos ambos hilos.
+        for hilo in hilos:
+            hilo.start()
+
+        mostrar_estaciones() 
+
+        print("\nEscribe 'r' para solicitar un riego o 'salir' para terminar.")
+
+        while True:
+            orden = input("\nWM_FO > ").strip().lower()
+
+            if orden == "r":
+                gestionar_solicitud_riego(productor, id_operador)
+
+            elif orden == "salir":
+                break
+
+            else:
+                print("Orden no válida. Utiliza 'r' o 'salir'.")
+
+    except KeyboardInterrupt:
+        print("\nInterrupción solicitada por el usuario.")
 
     except Exception as error:
         print(f"Error en WM_FO: {error}")
 
     finally:
-        for consumidor in consumidores:
-            consumidor.close()
-        print("Consumidores Kafka cerrados.")
+        # Avisamos a los hilos de que deben terminar.
+        detener.set()
+
+        # Esperamos a que terminen antes de cerrar la aplicación.
+        for hilo in hilos:
+            if hilo.is_alive():
+                hilo.join()
+
+        if productor is not None:
+            productor.close()
+
+        print("WM_FO cerrado.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WM_FieldOperator")
@@ -180,71 +404,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args.id_operador, args.ip, args.puerto_kafka)
-
-#------------------------ 2 Consumidores - 2 Hilos ------------------------#
-"""En caso de ser necesario, usar dos hilos para los dos consumidores"""
-
-"""
-def escuchar_mensajes(consumidor, detener):    
-    Lee mensajes de un consumidor hasta que se solicite parar.
-    try:
-        while not detener.is_set():
-            mensajes = consumidor.poll(timeout_ms=1000)
-
-            for registros in mensajes.values():    
-                for mensaje in registros:
-                    print(f"[{mensaje.topic}] {mensaje.value}")
-
-    finally:
-        consumidor.close()
-        print(f"Consumidor de {consumidor.subscription()} cerrado.")
-
-"""
-
-"""
-def main(id_operador, ip, puerto_kafka):
-    config = load_field_operator_config()
-
-    if ip is None:
-        ip = config.kafka_host
-    if puerto_kafka is None:
-        puerto_kafka = config.kafka_port
-
-    print(f"Operario {id_operador} iniciado")
-    print(f"Broker Kafka: {ip}:{puerto_kafka}")
-
-    detener = threading.Event()
-    hilos = []
-
-    try:
-        consumidor_eventos = crear_consumidor_kafka(id_operador, ip, puerto_kafka, "ce.eventos.fo")
-        consumidor_estados = crear_consumidor_kafka(id_operador, ip, puerto_kafka, "ce.estados.fo")
-
-        print("Consumidores Kafka creados correctamente.")
-
-        for consumidor in (consumidor_eventos, consumidor_estados):
-            hilo = threading.Thread(
-                target=escuchar_mensajes,
-                args=(consumidor, detener),
-            )
-            hilo.start()
-            hilos.append(hilo)
-
-        print("Escuchando eventos y estados.")
-
-        for hilo in hilos:
-            hilo.join()
-
-    except KeyboardInterrupt:
-        print("\nCerrando WM_FO...")
-
-    except Exception as error:
-        print(f"Error al conectar con kafka: {error}")
-    finally:
-        detener.set()
-
-        for hilo in hilos:
-            hilo.join()
-
-        print("WM_FO finalizado.")
-"""
