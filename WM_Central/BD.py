@@ -39,7 +39,7 @@ def inicializar():
 
     conexion.commit()
     conexion.close()
-    print("base de datos inicializada, las estaciones ya guardadas se marcan como desconectadas")
+    print("[BASE DE DATOS] Inicializada.")
 
 #Funcion para guardar las estaciones ne la bd
 def guardar_estacion(id_estacion, ubicacion, estado_inicial="DISPONIBLE"):
@@ -54,7 +54,6 @@ def guardar_estacion(id_estacion, ubicacion, estado_inicial="DISPONIBLE"):
     
     conexion.commit()
     conexion.close()
-    print(f"estacion '{id_estacion}' con ubicacion: {ubicacion} guardada como '{estado_inicial}")
 
 #funcion para modificar los estados de las maquinas
 def modificar_estados(id_estacion, nuevo_estado):
@@ -70,7 +69,7 @@ def modificar_estados(id_estacion, nuevo_estado):
 
     conexion.commit()
     conexion.close()
-    print(f"Estado de la estacion {id_estacion} actualizado a {nuevo_estado}")
+    print(f"[ACTUALIZACIÓN] Estado de la estación '{id_estacion}' actualizado a '{nuevo_estado}'.")
 
 #funcion para devolver las estaciones registradas
 def devolver_estaciones():

@@ -292,8 +292,6 @@ def estacion_disponible(id_estacion):
 def seleccionar_estacion():
     """Permite al operario elegir una estación por su identificador."""
 
-    mostrar_estaciones()
-
     if not estaciones:
         print("No hay estaciones disponibles para seleccionar.")
         return None
@@ -362,7 +360,7 @@ def main(id_operador, ip, puerto_kafka):
         print("\nEscribe 'r' para solicitar un riego o 'salir' para terminar.")
 
         while True:
-            orden = input("\nWM_FO > ").strip().lower()
+            orden = input(f"\nWM_FO [{id_operador}] > ").strip().lower()
 
             if orden == "r":
                 gestionar_solicitud_riego(productor, id_operador)

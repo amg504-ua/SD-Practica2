@@ -1,11 +1,13 @@
-'''Cada paso que haga la central, deberá notificarlo al Operario.'''
 import socket
 import threading
 import BD
-import sys
-import os
+
 #sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-#from Common.config import load_central_config
+
+from kafka import KafkaProducer, KafkaConsumer
+from Common.config import load_central_config
+
+"""COMUNICACIÓN MEDIANTE SOCKETS"""
 
 HEADER = 64
 FORMAT = 'utf-8'
@@ -58,26 +60,26 @@ def handle_client(conn, addr):
                     elif tipo == "CONEXION" and len(partes) == 2:
                         id_estacion = partes[1]
                         id_estacionA = id_estacion
-                        BD.modificar_estados(id_estacion, "Available")
-                        print(f"Estacion available: {id_estacion}")
+                        BD.modificar_estados(id_estacion, "DISPONIBLE")
+                        print(f"Estacion disponible: {id_estacion}")
                         respuesta = f"CONEXION_OK#{id_estacion}"
 
                     #si la estacion se quiere conectar y ya esta registrada
                     elif tipo == "AVISO_FUGA" and len(partes) == 2:
                         id_estacion = partes[1]
-                        BD.modificar_estados(id_estacion, "Leak")
+                        BD.modificar_estados(id_estacion, "DESCONECTADA")
                         print(f"Estacion en fuga: {id_estacion}")
                         respuesta = f"AVISO_FUGA_RECIBIDO#{id_estacion}"
                     
                     #si la estacion se quiere conectar y ya esta registrada
                     elif tipo == "FUGA_RESUELTA" and len(partes) == 2:
                         id_estacion = partes[1]
-                        BD.modificar_estados(id_estacion, "Available")
+                        BD.modificar_estados(id_estacion, "DISPONIBLE")
                         print(f"Estacion CON FUGA RESUELTA: {id_estacion}")
                         respuesta = f"FUGA_RESUELTA_CONFIRMACION#{id_estacion}"
                     
                     elif tipo in ["ORDEN_OoO_RECIBIDO", "ORDEN_ACTIVACION_RECIBIDA"]: 
-                        print(f"Estacion available: {id_estacion}")
+                        print(f"Estacion disponible: {id_estacion}")
                         respuesta = f"CONEXION_OK#{id_estacion}"
 
                     else:
@@ -92,7 +94,7 @@ def handle_client(conn, addr):
             print(f"[ERROR DE CONEXIÓN] {addr}: {exc}", flush=True)
 
     if id_estacionA is not None:
-        BD.modificar_estados(id_estacionA, "Disconnected")
+        BD.modificar_estados(id_estacionA, "DESCONECTADA")
         print(f"Estacion {id_estacionA} pasa a desconectada")
     
     conn.close()
@@ -127,53 +129,123 @@ def servidor_sockets(puerto):
     finally:
         servidor.close()
 
-#def main():
-#    print("WM_Central iniciado")
+"""COMUNICACIÓN MEDIANTE KAFKA"""
 
+#======= PRODUCTORES =======#
 
-#if __name__ == "__main__":
-#    main()
+def crear_productor_kafka(ip,puerto):
+    productor = KafkaProducer(
+        bootstrap_servers=f"{ip}:{puerto}",
+        value_serializer=lambda mensaje: mensaje.encode("utf-8")
+    )
 
-#esto de abajo es el main
-def central(Puerto, IP, Puerto_Broker):
+    return productor
+
+def enviar_estado(productor, id_estacion, estado, ubicacion, caudal="-", volumen="-", id_operario="-"):
+    
+    mensaje = (f"{id_estacion}#{estado}#{ubicacion}#{caudal}#{volumen}#{id_operario}")
+
+    try:
+        resultado = productor.send("ce.estados.fo", value=mensaje).get(timeout=10)
+        print(f"[KAFKA] Estado enviado: {mensaje} (Topic: {resultado.topic})", flush=True)
+    
+    except Exception as error:
+        print(f"[KAFKA] Error al enviar el estado: {error}", flush=True)
+
+#======= CONSUMIDORES =======#
+
+def crear_consumidor_kafka(ip, puerto, topic):
+    consumidor = KafkaConsumer(
+        topic,
+        bootstrap_servers=f"{ip}:{puerto}",
+        group_id="wm-central-peticiones-riego",
+        auto_offset_reset="latest",
+        value_deserializer=lambda mensaje: mensaje.decode("utf-8")
+    )
+
+    return consumidor
+
+def escuchar_solicitudes_riego(consumidor, detener):
+    try:
+        print("[KAFKA] Escuchando solicitudes de riego...")
+
+        while not detener.is_set():
+            mensajes = consumidor.poll(timeout_ms=500)
+
+            for registros in mensajes.values():
+                for mensaje in registros:
+                    print(
+                        f"[SOLICITUD RECIBIDA] {mensaje.value}"
+                    ) 
+    finally:
+        consumidor.close()
+
+"""MAIN"""
+
+def central():
     '''Esto seguramente lo divida en dos funciones diferentes, pero
     es para que se entienda el concepto.'''
-    #cargarymostrarDatosBD() 
+    config = load_central_config()
+
+    print("[CENTRAL] Iniciando...")
+    print(
+        f"[CENTRAL] Kafka: "
+        f"{config.kafka_host}:{config.kafka_port}"
+    )
+
+    detener = threading.Event()
+    consumidor = None
+    productor = None
+    hilo_kafka = None
+    hilo_sockets = None
+    
+    """BASE DE DATOS"""
+
     BD.inicializar()
     estaciones = BD.devolver_estaciones()
     for estacion in estaciones:
-        print(f"Estacion : {estacion[0]}, ubicacion: {estacion[1]}, estado: {estacion[2]} ")
-    
-    '''
-        Primero conectara con la BD y cargará los datos.
-        Como hasta que una estacion no establezca conexión real
-        con la central, su estado debe permanecer en desconectado,
-        podemos hacer dos cosas:
-            1. Que al cargar se modifiquen todos los estados a desconectado.
-            2. Que al apagar el código, las WS se pongan es desconectado para que cuando
-            se conecte otra vez la central, salga en desconectado.
+        print(f"[ESTACIÓN] : {estacion[0]}, [UBICACIÓN] : {estacion[1]}, [ESTADO] : {estacion[2]} .")
 
-            Por tema de errores inesperados que fuercen el apagado de la central, imagino que la opción 2
-            no se puede hacer o es más compleja.
-    '''
-    '''Arrancar el Hilo de Sockets'''
-    #crearHiloSockets(Puerto)
-    hilo_sockets = threading.Thread(target=servidor_sockets, args=(Puerto,))
-    hilo_sockets.daemon = True
-    hilo_sockets.start()
-    '''Arrancar Hilo Kafka'''
-    #crearHiloKafka(IP, Puerto_Broker)
-    '''Iniciar Panel de Control'''
-    #iniciarPanelControl()
-    #quitar los comentarios estos de aqui para probarlo
-    #es provisional pq en la practica dice que hay que pasar
-    #toda esta info con kafka
     try:
+    
+        """KAFKA"""
+        consumidor = crear_consumidor_kafka(config.kafka_host, config.kafka_port, "fo.peticion_riego.ce")
+        productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
+
+        enviar_estado(productor, "WS_TEST", "DISPONIBLE", "Pruebas")
+                
+        print("[CENTRAL] Conexiones Kafka creadas.")
+
+        #ESTACIÓN CREADA PRUEBAS
+        BD.guardar_estacion("WS_TEST", "Pruebas", "DESCONECTADA")
+        BD.modificar_estados("WS_TEST", "DISPONIBLE")
+
+        """SOCKETS"""
+        hilo_sockets = threading.Thread(target=servidor_sockets, args=(config.socket_port,), daemon = True)
+        hilo_sockets.start()
+
+        #Iniciar el consumidor de solicitudes
+        hilo_kafka = threading.Thread(target=escuchar_solicitudes_riego, args=(consumidor, detener), daemon=True)
+        hilo_kafka.start()
+
+        print("[CENTRAL] Servidor iniciado.")
+
         while True:
-            import time
-            time.sleep(1)
+            detener.wait(timeout=1)
+    
     except KeyboardInterrupt:
-       print("Adios")
+        print("\n[CENTRAL] Cerrando...")
+
+    finally:
+        detener.set()
+
+        if hilo_kafka is not None:
+            hilo_kafka.join(timeout=3)
+
+        if productor is not None:
+            productor.close(timeout=5)
+
+        print("[CENTRAL] Cerrada.")
 
 if __name__ == "__main__":
-   central(5050, "127.0.0.1", 9092)
+   central()
