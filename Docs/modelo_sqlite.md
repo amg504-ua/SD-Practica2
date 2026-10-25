@@ -7,7 +7,7 @@ necesaria para el funcionamiento de `WM_Central`.
 
 El modelo de datos estará formado inicialmente por dos entidades principales:
 
-- `OPERARIOS`
+- `OPERARIOS` (Finalmente, no vamos a implementarla, por el momento)
 - `WATERING_STATIONS`
 
 ### OPERARIOS
