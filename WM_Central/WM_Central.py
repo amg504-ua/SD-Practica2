@@ -24,13 +24,14 @@ def recibir_exacto(conn, cantidad):
 
     return bytes(datos)
 
+#un hilo por cada monitor que se conecta
 def handle_client(conn, addr):
     print(f"[NUEVA CONEXION] {addr} connected.")
     #variable para guardar la estacion en la bd
     id_estacionA = None 
     
     connected = True
-    while connected:#infinito, cambiar para la practica
+    while connected:
         try: 
             msg_length = conn.recv(2048).decode(FORMAT)
             if msg_length:
@@ -62,14 +63,14 @@ def handle_client(conn, addr):
                         print(f"Estacion available: {id_estacion}")
                         respuesta = f"CONEXION_OK#{id_estacion}"
 
-                    #si la estacion se quiere conectar y ya esta registrada
+                    #el monitor no se puede conectar al engine pq este se ha caido
                     elif tipo == "AVISO_FUGA" and len(partes) == 2:
                         id_estacion = partes[1]
                         BD.modificar_estados(id_estacion, "Leak")
                         print(f"Estacion en fuga: {id_estacion}")
                         respuesta = f"AVISO_FUGA_RECIBIDO#{id_estacion}"
                     
-                    #si la estacion se quiere conectar y ya esta registrada
+                    #sel engine ya esta operativo
                     elif tipo == "FUGA_RESUELTA" and len(partes) == 2:
                         id_estacion = partes[1]
                         BD.modificar_estados(id_estacion, "Available")
@@ -77,7 +78,7 @@ def handle_client(conn, addr):
                         respuesta = f"FUGA_RESUELTA_CONFIRMACION#{id_estacion}"
                     
                     elif tipo in ["ORDEN_OoO_RECIBIDO", "ORDEN_ACTIVACION_RECIBIDA"]: 
-                        print(f"Estacion available: {id_estacion}")
+                        print(f"Orden {tipo} recibida: {id_estacion}")
                         respuesta = f"CONEXION_OK#{id_estacion}"
 
                     else:
@@ -85,6 +86,7 @@ def handle_client(conn, addr):
 
                     conn.send((respuesta + "\n").encode(FORMAT))
             else:
+                #pasa cuando recv() esta vacio, el cliente cierra la conexion
                 print(f"DESCONEXION DEL MONITOR EN {addr}")
                 connected = False
 
@@ -101,8 +103,9 @@ def handle_client(conn, addr):
 def servidor_sockets(puerto):
     SERVER = socket.gethostbyname(socket.gethostname())
     ADDR = (SERVER, puerto)
-
+    #se pone en 0.0.0.0 para escuchar en las interfaces de la red
     servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #evita el error de que ya esta en uso.
     servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     try:

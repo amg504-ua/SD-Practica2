@@ -39,7 +39,7 @@ def escuchar_central(cliente, id_estacion):
 
             elif orden == "ACTIVACION":
                 print(f"\n Orden recibida de central: Estacion reactivada, AVAILABLE (verde)")
-                send(cliente, f"ORDEN_OoO_RECIBIDO#{id_estacion}")
+                send(cliente, f"ORDEN_ACTIVACION_RECIBIDA#{id_estacion}")
 
             elif orden in ["AVISO_FUGA_RECIBIDO", "FUGA_RESUELTA_CONFIRMACION"]:
                 print(f"\n Confirmacion recibida: {linea}")
