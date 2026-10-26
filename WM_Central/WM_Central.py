@@ -144,7 +144,7 @@ def crear_productor_kafka(ip,puerto):
 
     return productor
 
-def enviar_estado(productor, id_estacion, estado, ubicacion, caudal="-", volumen="-", id_operario="-"):
+def enviar_estado_fo(productor, id_estacion, estado, ubicacion, caudal="-", volumen="-", id_operario="-"):
     
     mensaje = (f"{id_estacion}#{estado}#{ubicacion}#{caudal}#{volumen}#{id_operario}")
 
@@ -155,6 +155,41 @@ def enviar_estado(productor, id_estacion, estado, ubicacion, caudal="-", volumen
     except Exception as error:
         print(f"[KAFKA] Error al enviar el estado: {error}", flush=True)
 
+def enviar_evento_fo(productor, mensaje):
+
+    try:
+        resultado = productor.send(
+            "ce.eventos.fo",
+            value=mensaje
+        ).get(timeout=10)
+        print(
+            f"[KAFKA] Evento enviado a FO: {mensaje} "
+            f"(Topic: {resultado.topic})",
+            flush=True
+        )
+    except Exception as error:
+        print(f"[KAFKA] Error enviado evento a FO: {error}", flush=True) 
+
+def enviar_orden_engine(productor, solicitud):
+
+    mensaje = (
+        f"{solicitud['id_peticion']}#ORDEN_RIEGO#"
+        f"{solicitud['id_operario']}#"
+        f"{solicitud['id_estacion']}#"
+        f"{solicitud['tiempo_riego']}"
+    )
+
+    try:
+        resultado = productor.send("ce.ordenes.e", value=mensaje).get(timeout=10)
+
+        print(f"[KAFKA] Orden enviada al Engine: {mensaje} (Topic: {resultado.topic})", flush=True)
+
+        return True
+
+    except Exception as error:
+        print(f"[KAFKA] Error enviando la orden al Engine: {error}", flush=True)
+        
+        return False
 #======= CONSUMIDORES =======#
 
 def crear_consumidor_kafka(ip, puerto, topic):
@@ -168,7 +203,7 @@ def crear_consumidor_kafka(ip, puerto, topic):
 
     return consumidor
 
-def escuchar_solicitudes_riego(consumidor, detener):
+def escuchar_solicitudes_riego(consumidor, productor, detener):
     try:
         print("[KAFKA] Escuchando solicitudes de riego...")
 
@@ -177,11 +212,107 @@ def escuchar_solicitudes_riego(consumidor, detener):
 
             for registros in mensajes.values():
                 for mensaje in registros:
-                    print(
-                        f"[SOLICITUD RECIBIDA] {mensaje.value}"
-                    ) 
+                    contenido = mensaje.value
+
+                    print(f"[SOLICITUD RECIBIDA] {mensaje.value}")
+                    
+                    campos = contenido.split("#")
+
+                    valida, motivo, solicitud = validar_solicitud_riego(contenido)
+
+                    if len(campos) != 5:
+                        print(
+                            "[SOLICITUD DENEGADA] Formato incorrecto; "
+                            "no se puede construir una respuesta completa.",
+                            flush=True
+                        )
+                        continue
+
+                    id_peticion, tipo, id_operario, id_estacion, tiempo = campos
+
+                    if valida:
+                        evento = (
+                            f"{id_peticion}#RIEGO_AUTORIZADO#"
+                            f"{id_operario}#{id_estacion}"
+                        )
+
+                        print(
+                            f"[VALIDACIÓN OK] Petición {id_peticion}: "
+                            f"Estación: {id_estacion}",
+                            flush=True
+                        )
+                    else:
+                        evento = (
+                            f"{id_peticion}#RIEGO_DENEGADO#"
+                            f"{id_operario}#{id_estacion}#{motivo}"
+                        )
+                        print(f"[SOLICITUD DENEGADA] {motivo}", flush=True)
+                    
+                    enviar_evento_fo(productor, evento)
+
+                    if valida:
+                        enviado = enviar_orden_engine(productor, solicitud)
+
+                        if not enviado:
+                            print(
+                                f"[ERROR] No se pudo enviar la orden de riego "
+                                f"{solicitud['id_peticion']}",
+                                flush=True
+                            )
     finally:
         consumidor.close()
+
+def validar_solicitud_riego(mensaje):
+
+    campos = mensaje.split("#")
+
+    if len(campos) != 5:
+        return False, "Formato de solicitud incorrecto.", None
+
+    id_peticion, tipo, id_operario, id_estacion, tiempo = campos
+
+    if tipo != "SOLICITUD_RIEGO":
+        return False, "Tipo de solicitud desconocido.", None
+    if not id_peticion or not id_operario or not id_estacion:
+        return False, "Faltan campos obligatorios.", None
+
+    try:
+        tiempo_riego = int(tiempo)
+        if tiempo_riego <= 0:
+            raise ValueError
+    except ValueError:
+        return False, "La duración debe ser un entero positivo.", None
+
+    estaciones = BD.devolver_estaciones()
+
+    estacion = next(
+        (
+            e for e in estaciones
+            if e[0] == id_estacion
+        ), None
+    )
+
+    if estacion is None:
+        return False, f"Estación {id_estacion} no registrada.", None
+
+    estado = estacion[2]
+
+    if estado != "DISPONIBLE":
+        return False, (
+            f"Estación {id_estacion} no disponible."
+            f"(Estado: {estado})"
+        ), None
+
+    solicitud = {
+        "id_peticion": id_peticion,
+        "id_operario": id_operario,
+        "id_estacion": id_estacion,
+        "tiempo_riego": tiempo_riego,
+    }
+
+    return True, "Solicitud validada correctamente.", solicitud
+
+#def recbir_evento_e():
 
 """MAIN"""
 
@@ -205,7 +336,13 @@ def central():
     """BASE DE DATOS"""
 
     BD.inicializar()
+
+    #ESTACIÓN CREADA PRUEBAS
+    BD.guardar_estacion("WS_TEST", "Pruebas", "DESCONECTADA")
+    BD.modificar_estados("WS_TEST", "DISPONIBLE")
+
     estaciones = BD.devolver_estaciones()
+
     for estacion in estaciones:
         print(f"[ESTACIÓN] : {estacion[0]}, [UBICACIÓN] : {estacion[1]}, [ESTADO] : {estacion[2]} .")
 
@@ -215,20 +352,18 @@ def central():
         consumidor = crear_consumidor_kafka(config.kafka_host, config.kafka_port, "fo.peticion_riego.ce")
         productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
 
-        enviar_estado(productor, "WS_TEST", "DISPONIBLE", "Pruebas")
-                
-        print("[CENTRAL] Conexiones Kafka creadas.")
+        for estacion in BD.devolver_estaciones():
+            id_estacion, ubicacion, estado = estacion
+            enviar_estado_fo(productor, id_estacion, estado, ubicacion)            
 
-        #ESTACIÓN CREADA PRUEBAS
-        BD.guardar_estacion("WS_TEST", "Pruebas", "DESCONECTADA")
-        BD.modificar_estados("WS_TEST", "DISPONIBLE")
+        print("[CENTRAL] Conexiones Kafka creadas.")
 
         """SOCKETS"""
         hilo_sockets = threading.Thread(target=servidor_sockets, args=(config.socket_port,), daemon = True)
         hilo_sockets.start()
 
         #Iniciar el consumidor de solicitudes
-        hilo_kafka = threading.Thread(target=escuchar_solicitudes_riego, args=(consumidor, detener), daemon=True)
+        hilo_kafka = threading.Thread(target=escuchar_solicitudes_riego, args=(consumidor, productor, detener), daemon=True)
         hilo_kafka.start()
 
         print("[CENTRAL] Servidor iniciado.")
