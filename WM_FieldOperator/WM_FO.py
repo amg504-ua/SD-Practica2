@@ -89,14 +89,14 @@ def escuchar_eventos(consumidor, detener, id_operador):
                     if tipo_evento == "RIEGO_AUTORIZADO":
                         print(
                             f"\n[Central] Riego Autorizado. "
-                            f"Petición: {id_peticion}"
-                            f"Estación: {id_estacion}"
+                            f"Petición: {id_peticion}. "
+                            f"Estación: {id_estacion}."
                         )
                     elif tipo_evento == "RIEGO_DENEGADO":
                         motivo = campos[4]
                         print(
                             f"\n[Central] Riego denegado. "
-                            f"Petición: {id_peticion}"
+                            f"Petición: {id_peticion}. "
                             f"Estación: {id_estacion}. "
                             f"Motivo: {motivo}"
                         )
@@ -127,7 +127,7 @@ def escuchar_eventos(consumidor, detener, id_operador):
                         print(
                             f"\n[Central] Riego interrumpido "
                             f"en la estación {id_estacion}. "
-                            f"Motivo: {motivo}"
+                            f"Motivo: {motivo} "
                             f"Petición: {id_peticion}"
                         )
 
