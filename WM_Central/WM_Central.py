@@ -27,7 +27,7 @@ def recibir_exacto(conn, cantidad):
     return bytes(datos)
 
 #un hilo por cada monitor que se conecta
-def handle_client(conn, addr):
+def handle_client(conn, addr, productor_kafka):
     print(f"[NUEVA CONEXION] {addr} connected.")
     #variable para guardar la estacion en la bd
     id_estacionA = None 
@@ -62,13 +62,33 @@ def handle_client(conn, addr):
                         id_estacion = partes[1]
                         id_estacionA = id_estacion
                         BD.modificar_estados(id_estacion, "DISPONIBLE")
+                        estaciones = BD.devolver_estaciones()
+                        ubicacion = next(
+                            (e[1] for e in estaciones if e[0] == id_estacion),"N/D"
+                        )
+                        enviar_estado_fo(
+                            productor_kafka,
+                            id_estacion,
+                            "DISPONIBLE",
+                            ubicacion
+                        )
                         print(f"Estacion disponible: {id_estacion}")
                         respuesta = f"CONEXION_OK#{id_estacion}"
 
                     #el monitor no se puede conectar al engine pq este se ha caido
                     elif tipo == "AVISO_FUGA" and len(partes) == 2:
                         id_estacion = partes[1]
-                        BD.modificar_estados(id_estacion, "DESCONECTADA")
+                        BD.modificar_estados(id_estacion, "FUGA")
+                        estaciones = BD.devolver_estaciones()
+                        ubicacion = next(
+                            (e[1] for e in estaciones if e[0] == id_estacion),"N/D"
+                        )
+                        enviar_estado_fo(
+                            productor_kafka,
+                            id_estacion,
+                            "FUGA",
+                            ubicacion
+                        )
                         print(f"Estacion en fuga: {id_estacion}")
                         respuesta = f"AVISO_FUGA_RECIBIDO#{id_estacion}"
                     
@@ -76,6 +96,16 @@ def handle_client(conn, addr):
                     elif tipo == "FUGA_RESUELTA" and len(partes) == 2:
                         id_estacion = partes[1]
                         BD.modificar_estados(id_estacion, "DISPONIBLE")
+                        estaciones = BD.devolver_estaciones()
+                        ubicacion = next(
+                            (e[1] for e in estaciones if e[0] == id_estacion),"N/D"
+                        )
+                        enviar_estado_fo(
+                            productor_kafka,
+                            id_estacion,
+                            "DISPONIBLE",
+                            ubicacion
+                        )
                         print(f"Estacion CON FUGA RESUELTA: {id_estacion}")
                         respuesta = f"FUGA_RESUELTA_CONFIRMACION#{id_estacion}"
                     
@@ -97,12 +127,23 @@ def handle_client(conn, addr):
 
     if id_estacionA is not None:
         BD.modificar_estados(id_estacionA, "DESCONECTADA")
-        print(f"Estacion {id_estacionA} pasa a desconectada")
+        estaciones = BD.devolver_estaciones()
+        ubicacion = next(
+            (e[1] for e in estaciones if e[0] == id_estacion),"N/D"
+        )
+        enviar_estado_fo(
+            productor_kafka,
+            id_estacion,
+            "DISPONIBLE",
+            ubicacion
+        )
+        print(f"[ESTACIÓN] {id_estacionA} pasa a DESCONECTADA.", flush=True)
+
     
     conn.close()
     print(f"Conecion cerrada {addr}", flush=True)
 
-def servidor_sockets(puerto):
+def servidor_sockets(puerto, productor):
     SERVER = socket.gethostbyname(socket.gethostname())
     ADDR = (SERVER, puerto)
     #se pone en 0.0.0.0 para escuchar en las interfaces de la red
@@ -124,7 +165,7 @@ def servidor_sockets(puerto):
 
             hilo = threading.Thread(
                 target=handle_client,
-                args=(conn, addr),
+                args=(conn, addr, productor),
                 daemon=True,
             )
             hilo.start()
@@ -196,7 +237,7 @@ def crear_consumidor_kafka(ip, puerto, topic):
     consumidor = KafkaConsumer(
         topic,
         bootstrap_servers=f"{ip}:{puerto}",
-        group_id="wm-central-peticiones-riego",
+        group_id=f"wm-central-{topic.replace('.', '-')}",
         auto_offset_reset="latest",
         value_deserializer=lambda mensaje: mensaje.decode("utf-8")
     )
@@ -312,7 +353,41 @@ def validar_solicitud_riego(mensaje):
 
     return True, "Solicitud validada correctamente.", solicitud
 
-#def recbir_evento_e():
+def escuchar_eventos_engine(consumidor, productor, detener):
+    print("[KAFKA] Escuchando eventos del Engine...", flush=True)
+
+    try:
+        while not detener.is_set():
+            mensajes = consumidor.poll(timeout_ms=500)
+
+            for registros in mensajes.values():
+                for mensaje in registros:
+                    contenido = mensaje.value
+                    campos = contenido.split("#")
+
+                    if len(campos) != 6:
+                        print(
+                            f"[ENGINE] Evento descartado: Formato Incorrecto:"
+                            f"{contenido}",
+                            flush=True
+                        )
+                        continue
+
+                    id_peticion, tipo, id_operario, id_estacion, dato1, dato2 = campos
+
+                    if tipo not in ("DATOS_RIEGO", "RESUMEN_RIEGO"):
+                        print(
+                            f"[ENGINE] Evento desconocido: {tipo}",
+                            flush=True
+                        )
+                        continue
+
+                    print(f"[ENGINE] Evento recibido: {contenido}", flush=True)
+
+                    enviar_evento_fo(productor, contenido)
+    
+    finally: 
+        consumidor.close()
 
 """MAIN"""
 
@@ -338,8 +413,8 @@ def central():
     BD.inicializar()
 
     #ESTACIÓN CREADA PRUEBAS
-    BD.guardar_estacion("WS_TEST", "Pruebas", "DESCONECTADA")
-    BD.modificar_estados("WS_TEST", "DISPONIBLE")
+    #BD.guardar_estacion("WS_TEST", "Pruebas", "DESCONECTADA")
+    #BD.modificar_estados("WS_TEST", "DISPONIBLE")
 
     estaciones = BD.devolver_estaciones()
 
@@ -350,6 +425,7 @@ def central():
     
         """KAFKA"""
         consumidor = crear_consumidor_kafka(config.kafka_host, config.kafka_port, "fo.peticion_riego.ce")
+        consumidor_engine = crear_consumidor_kafka(config.kafka_host, config.kafka_port, "e.eventos.ce")
         productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
 
         for estacion in BD.devolver_estaciones():
@@ -359,12 +435,15 @@ def central():
         print("[CENTRAL] Conexiones Kafka creadas.")
 
         """SOCKETS"""
-        hilo_sockets = threading.Thread(target=servidor_sockets, args=(config.socket_port,), daemon = True)
+        hilo_sockets = threading.Thread(target=servidor_sockets, args=(config.socket_port, productor), daemon = True)
         hilo_sockets.start()
 
         #Iniciar el consumidor de solicitudes
         hilo_kafka = threading.Thread(target=escuchar_solicitudes_riego, args=(consumidor, productor, detener), daemon=True)
         hilo_kafka.start()
+
+        hilo_kafka_engine = threading.Thread(target=escuchar_eventos_engine, args=(consumidor_engine, productor, detener), daemon=True)
+        hilo_kafka_engine.start()
 
         print("[CENTRAL] Servidor iniciado.")
 
@@ -379,6 +458,9 @@ def central():
 
         if hilo_kafka is not None:
             hilo_kafka.join(timeout=3)
+
+        if hilo_kafka_engine is not None:
+            hilo_kafka_engine.join(timeout=3) 
 
         if productor is not None:
             productor.close(timeout=5)
