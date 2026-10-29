@@ -1,9 +1,13 @@
 import socket
 import sys
+import os
 import time
 import threading
 from kafka import KafkaConsumer, KafkaProducer
 from Common.config import load_engine_config
+
+id_estacion_engine = None
+estacion_identificada = threading.Event()
 
 """SOCKETS"""
 
@@ -26,6 +30,8 @@ def escuchar_monitor(conn, addr):
     print(f"Monitor conectado desde {addr}")
     conectado = True
 
+    global id_estacion_engine
+
     while conectado:
         try:
             msg = recibir_msg(conn)
@@ -45,16 +51,21 @@ def escuchar_monitor(conn, addr):
 
                 if orden == "CONEXION_ENGINE":
                     id_estacion = partes[1]
+                    id_estacion_engine = id_estacion
+                    estacion_identificada.set()
                     print(f"Conectado con el monitor de estacion {id_estacion}")
                     send(conn, f"CONEXION_OK#{id_estacion}")
 
                 elif orden == "COMPROBACION_ESTADO_WS":
                     id_estacion = partes[1]
 
+                    if id_estacion != id_estacion_engine:
+                        send(conn, f"KO#{id_estacion}")
+                        continue
+
                     if estado == "OK":
                         send(conn, f"ESTADO_OK#{id_estacion}")
                     else:
-
                         send(conn, f"KO#{id_estacion}")
                 
         except (ConnectionError, OSError) as e:
@@ -123,11 +134,11 @@ def enviar_evento_engine(productor, mensaje):
 
 #======= CONSUMIDORES =======#
 
-def crear_consumidor_kafka(ip, puerto):
+def crear_consumidor_kafka(ip, puerto, id_estacion):
     return KafkaConsumer(
             "ce.ordenes.e",
             bootstrap_servers=f"{ip}:{puerto}",
-            group_id="wm-engine-ordenes",
+            group_id=f"wm-engine-{id_estacion}",
             #group_id=f"wm-engine-{id_estacion}",
             auto_offset_reset="latest",
             enable_auto_commit=True,
@@ -224,7 +235,7 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
     finally:
         print("[ENGINE] Estación a la espera de nuevas órdenes.", flush=True)
         
-def escuchar_ordenes(consumidor, productor, detener):
+def escuchar_ordenes(consumidor, productor, detener, mi_id_estacion):
     print("\n[ENGINE] Escuchando órdenes de riego...", flush=True)
 
     try:
@@ -258,8 +269,8 @@ def escuchar_ordenes(consumidor, productor, detener):
                         print("[ENGINE] Duración de riego inválida.", flush=True)
                         continue
 
-                    #if id_estacion != mi_id_estacion:
-                    #    continue
+                    if id_estacion != mi_id_estacion:
+                        continue
 
                     ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_riego)
 
@@ -295,21 +306,27 @@ def main():
     productor = None
     hilo_servidor = None
     hilo_kafka = None
+    
 
     try:
-
-        consumidor = crear_consumidor_kafka(config.kafka_host, config.kafka_port)
-
-        productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
 
         """SOCKETS"""
         #arrancar el servidor en hilo aparte
         hilo_servidor = threading.Thread(target=servidor_monitor, args=(puerto, detener), daemon=True)
         hilo_servidor.start()
 
+        if not estacion_identificada.wait(timeout=60):
+            raise TimeoutError(
+                "El Monitor no ha enviado el ID de estación en 60 segundos."
+            )
+
         """KAFKA"""
 
-        hilo_kafka = threading.Thread(target=escuchar_ordenes, args=(consumidor, productor, detener), daemon=True)
+        consumidor = crear_consumidor_kafka(config.kafka_host, config.kafka_port, id_estacion_engine)
+
+        productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
+
+        hilo_kafka = threading.Thread(target=escuchar_ordenes, args=(consumidor, productor, detener, id_estacion_engine), daemon=True)
 
         hilo_kafka.start()
 
