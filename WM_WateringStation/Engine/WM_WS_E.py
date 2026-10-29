@@ -203,7 +203,21 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
                 print("[ENGINE] Riego Interrumpido por una fuga.", flush = True)
                 break
 
+            if not monitor_conectado.is_set():
+                interrumpido = True
+                motivo_interrupcion = "MONITOR_DESCONECTADO"
+                print(
+                    "[ENGINE][AVISO] Riego Interrumpido: "
+                    "el Monitor está desconectado.", flush=True
+                )
+                break
+
             time.sleep(1)
+
+            if not monitor_conectado.is_set():
+                interrumpido = True
+                motivo_interrupcion = "MONITOR_DESCONECTADO"
+                break
 
             volumen_acumulado += caudal / 60
 

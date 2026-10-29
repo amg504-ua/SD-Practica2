@@ -355,6 +355,9 @@ def validar_solicitud_riego(mensaje):
 
     return True, "Solicitud validada correctamente.", solicitud
 
+peticiones_finalizadas = set()
+bloqueo_peticiones = threading.Lock()
+
 def escuchar_eventos_engine(consumidor, productor, detener):
     print("[KAFKA] Escuchando eventos del Engine...", flush=True)
 
@@ -374,6 +377,7 @@ def escuchar_eventos_engine(consumidor, productor, detener):
                         )
                         continue
 
+                    id_peticion = campos[0]
                     tipo = campos[1]
 
                     if tipo == "RIEGO_INTERRUMPIDO":
@@ -389,15 +393,23 @@ def escuchar_eventos_engine(consumidor, productor, detener):
                         enviar_evento_fo(productor, contenido)
                         continue
 
-                    if tipo in ("DATOS_RIEGO", "RESUMEN_RIEGO"):
-                        if len(campos) != 6:
-                            print(
-                                f"[ENGINE] Evento descartado: Formato incorrecto: {contenido}", flush=True
-                            )
-                            continue
-                    else:
-                        print(f"[ENGINE] Evento desconocido: {tipo}", flush=True)
+                    if tipo not in ("DATOS_RIEGO", "RESUMEN_RIEGO"):
+                        print(
+                            f"[ENGINE] Evento desconocido: {tipo}", flush=True
+                        )
                         continue
+
+                    if len(campos) != 6:
+                        print(
+                            f"[ENGINE] Evento descartado: "
+                            f"Formato incorrecto: {contenido}",flush=True
+                        )
+                        continue
+                    with bloqueo_peticiones:
+                        if id_peticion in peticiones_finalizadas:
+                            continue
+                        if tipo == "RESUMEN_RIEGO":
+                            peticiones_finalizadas.add(id_peticion)
 
                     print(f"[ENGINE] Evento recibido: {contenido}", flush=True)
                     enviar_evento_fo(productor, contenido)
