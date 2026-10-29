@@ -133,8 +133,8 @@ def handle_client(conn, addr, productor_kafka):
         )
         enviar_estado_fo(
             productor_kafka,
-            id_estacion,
-            "DISPONIBLE",
+            id_estacionA,
+            "DESCONECTADA",
             ubicacion
         )
         print(f"[ESTACIÓN] {id_estacionA} pasa a DESCONECTADA.", flush=True)
@@ -365,25 +365,39 @@ def escuchar_eventos_engine(consumidor, productor, detener):
                     contenido = mensaje.value
                     campos = contenido.split("#")
 
-                    if len(campos) != 6:
+                    if len(campos) < 2:
                         print(
-                            f"[ENGINE] Evento descartado: Formato Incorrecto:"
-                            f"{contenido}",
+                            f"[ENGINE] Evento descartado: Formato incorrecto: {contenido}",
                             flush=True
                         )
                         continue
 
-                    id_peticion, tipo, id_operario, id_estacion, dato1, dato2 = campos
+                    tipo = campos[1]
 
-                    if tipo not in ("DATOS_RIEGO", "RESUMEN_RIEGO"):
-                        print(
-                            f"[ENGINE] Evento desconocido: {tipo}",
-                            flush=True
-                        )
+                    if tipo == "RIEGO_INTERRUMPIDO":
+                        if len(campos) != 5:
+                            print(
+                                f"[ENGINE] Intrrupción descartada: Formato Incorrecto: "
+                                f"{contenido}",
+                                flush=True
+                            )
+                            continue
+
+                        print(f"[CENTRAL] {contenido}", flush=True)
+                        enviar_evento_fo(productor, contenido)
+                        continue
+
+                    if tipo in ("DATOS_RIEGO", "RESUMEN_RIEGO"):
+                        if len(campos) != 6:
+                            print(
+                                f"[ENGINE] Evento descartado: Formato incorrecto: {contenido}", flush=True
+                            )
+                            continue
+                    else:
+                        print(f"[ENGINE] Evento desconocido: {tipo}", flush=True)
                         continue
 
                     print(f"[ENGINE] Evento recibido: {contenido}", flush=True)
-
                     enviar_evento_fo(productor, contenido)
     
     finally: 
