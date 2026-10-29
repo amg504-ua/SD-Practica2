@@ -128,13 +128,18 @@ def main():
             print (f"Establecida conexión en [{ADDR_CENTRAL}]")
 
             mensaje = f"REGISTRO#{ID_Estacion}#{Ubicacion}"
-            print("Envio al servidor: ", mensaje)
-            send(cliente, mensaje)#enviar la orden
-            respuesta = cliente.recv(2048).decode(FORMAT).strip()#esperar
-            print(f"Recibido: {respuesta}")
+            send(cliente, mensaje)
 
-            if respuesta != f"REGISTRO_OK#{ID_Estacion}":
-                print("Registro denegado")
+            respuesta = recibir_msg(cliente)
+
+            if respuesta == f"REGISTRO_OK#{ID_Estacion}":
+                print(f"[MONITOR] Estación {ID_Estacion} registrada correctamente.")
+
+            elif respuesta == f"REGISTRO_EXISTENTE#{ID_Estacion}":
+                print(f"[MONITOR] Estación {ID_Estacion} ya registrada. Reconectando...")
+
+            else:
+                print(f"[MONITOR] Registro denegado: {respuesta}")
                 cliente.close()#cerrar
                 sys.exit(1)
 

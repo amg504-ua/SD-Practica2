@@ -281,6 +281,13 @@ def escuchar_ordenes(consumidor, productor, detener, mi_id_estacion):
                     if id_estacion != mi_id_estacion:
                         continue
 
+                    #if not monitor_conectado.is_set():
+                    #    print(
+                    #        "[ENGINE][AVISO] Orden rechazada: el Monitor está desconectado.",
+                    #        flush=True
+                    #    )
+                    #    continue
+                    
                     ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_riego)
 
     finally:

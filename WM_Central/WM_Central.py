@@ -50,12 +50,14 @@ def handle_client(conn, addr, productor_kafka):
                         id_estacion = partes[1]
                         ubicacion = partes[2]
                         id_estacionA = id_estacion
-                        
-                        print(f"Estacion: {id_estacion} en {ubicacion}")
-                        #guardar en la bd
-                        BD.guardar_estacion(id_estacion, ubicacion)
-
-                        respuesta = f"REGISTRO_OK#{id_estacion}"
+                        if BD.existe_estacion(id_estacion):
+                            respuesta = f"REGISTRO_EXISTENTE#{id_estacion}"
+                        else:    
+                            #guardar en la bd
+                            BD.guardar_estacion(id_estacion, ubicacion)
+                            print(f"[REGISTRO] Nueva estación registrada: "
+                                  f"{id_estacion} en {ubicacion}.")
+                            respuesta = f"REGISTRO_OK#{id_estacion}"
                     
                     #si la estacion se quiere conectar y ya esta registrada
                     elif tipo == "CONEXION" and len(partes) == 2:
