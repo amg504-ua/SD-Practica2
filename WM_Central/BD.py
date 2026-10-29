@@ -1,8 +1,20 @@
 import sqlite3
-import os
+from pathlib import Path
+from Common.config import load_central_config
 
-#guardar el archivo de la base de datos en la carpeta de cenral
-Ruta_BD = os.path.join(os.path.dirname(__file__), "central.db")
+config = load_central_config()
+ruta_configurada = Path(config.database_path)
+
+if not ruta_configurada.is_absolute():
+    ruta_configurada = (
+        Path(__file__).resolve().parent.parent / ruta_configurada
+    )
+
+# Crear el directorio si no existe
+ruta_configurada.parent.mkdir(parents=True, exist_ok=True)
+
+# Ruta definitiva de SQLite
+Ruta_BD = str(ruta_configurada)
 
 #funciones para la base de datos
 def obtener_conexion():
@@ -15,14 +27,6 @@ def inicializar():
     conexion = obtener_conexion()
     creador = conexion.cursor()
 
-    #crear la tabla dde operarios
-    #creador.execute('''
-    #CREATE TABLE IF NOT EXISTS OPERARIOS (
-    #        id_operario TEXT PRIMARY KEY,
-    #        nombre_usuario TEXT NOT NULL,
-    #        contraseña TEXT NOT NULL
-    #    )
-    #''')
     #crear la tabla dde estaciones de riego
     creador.execute('''
     CREATE TABLE IF NOT EXISTS WATERING_STATIONS (
@@ -35,7 +39,7 @@ def inicializar():
 
     conexion.commit()
     conexion.close()
-    print("base de datos inicializada, las estaciones ya guardadas se marcan como desconectadas")
+    print("[BASE DE DATOS] Inicializada.")
 
 #Funcion para guardar las estaciones ne la bd
 def guardar_estacion(id_estacion, ubicacion, estado_inicial="DISPONIBLE"):
@@ -50,7 +54,6 @@ def guardar_estacion(id_estacion, ubicacion, estado_inicial="DISPONIBLE"):
     
     conexion.commit()
     conexion.close()
-    print(f"estacion '{id_estacion}' con ubicacion: {ubicacion} guardada como '{estado_inicial}")
 
 #funcion para modificar los estados de las maquinas
 def modificar_estados(id_estacion, nuevo_estado):
@@ -62,11 +65,11 @@ def modificar_estados(id_estacion, nuevo_estado):
         UPDATE WATERING_STATIONS
         SET estado = ?
         WHERE id_estacion = ?
-    ''', (id_estacion, nuevo_estado))
+    ''', (nuevo_estado, id_estacion))
 
     conexion.commit()
     conexion.close()
-    print(f"Estado de la estacion {id_estacion} actualizado a {nuevo_estado}")
+    print(f"[ACTUALIZACIÓN] Estado de la estación '{id_estacion}' actualizado a '{nuevo_estado}'.")
 
 #funcion para devolver las estaciones registradas
 def devolver_estaciones():
