@@ -8,6 +8,7 @@ from Common.config import load_engine_config
 
 id_estacion_engine = None
 estacion_identificada = threading.Event()
+monitor_conectado = threading.Event()
 
 """SOCKETS"""
 
@@ -28,6 +29,8 @@ def recibir_msg(socketC):
 
 def escuchar_monitor(conn, addr):
     print(f"Monitor conectado desde {addr}")
+    global monitor_conectado
+    monitor_conectado.set()
     conectado = True
 
     global id_estacion_engine
@@ -53,6 +56,7 @@ def escuchar_monitor(conn, addr):
                     id_estacion = partes[1]
                     id_estacion_engine = id_estacion
                     estacion_identificada.set()
+                    monitor_conectado.set()
                     print(f"Conectado con el monitor de estacion {id_estacion}")
                     send(conn, f"CONEXION_OK#{id_estacion}")
 
@@ -71,7 +75,12 @@ def escuchar_monitor(conn, addr):
         except (ConnectionError, OSError) as e:
             print(f"Error con el monitor: {e}")
             conectado = False
+    monitor_conectado.clear()
     conn.close()
+
+    print(
+        f"[ENGINE][AVISO] Se ha perdido la conexión con el Monitor de {id_estacion_engine}", flush=True
+    )
 
 def servidor_monitor(puerto, detener):
     SERVER = socket.gethostbyname(socket.gethostname())
