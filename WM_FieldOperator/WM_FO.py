@@ -131,32 +131,6 @@ def escuchar_eventos(consumidor, detener, id_operador):
                             f"Petición: {id_peticion}"
                         )
 
-                    elif tipo_evento == "DATOS_RIEGO":
-                        caudal = campos[4]
-                        volumen = campos[5]
-
-                        print(
-                            f"\n[CENTRAL] Datos de riego. "
-                            f"Petición: {id_peticion} | "
-                            f"Estación: {id_estacion} | "
-                            f"Caudal: {caudal} L/min | "
-                            f"Volumen acumulado: {volumen} L",
-                            flush=True
-                        )
-
-                    elif tipo_evento == "RESUMEN_RIEGO":
-                        tiempo_riego = campos[4]
-                        litros = campos[5]
-
-                        print(
-                            f"\n[Central] Riego finalizado. "
-                            f"Petición: {id_peticion} | "
-                            f"Estación: {id_estacion} | "
-                            f"Duración: {tiempo_riego} s | "
-                            f"Litros suministrados: {litros} L",
-                            flush=True
-                        )
-
     finally:
         consumidor.close()
 

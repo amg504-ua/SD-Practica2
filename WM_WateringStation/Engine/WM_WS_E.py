@@ -62,20 +62,28 @@ def escuchar_monitor(conn, addr):
             conectado = False
     conn.close()
 
-def servidor_monitor(puerto):
+def servidor_monitor(puerto, detener):
     SERVER = socket.gethostbyname(socket.gethostname())
     ADDR = (SERVER, puerto)
     #se pone en 0.0.0.0 para escuchar en las interfaces de la red
     servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     #evita el error de que ya esta en uso.
     servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    servidor.settimeout(1)
 
     try:
         servidor.bind(("0.0.0.0", puerto))
         servidor.listen()
 
-        while True:
-            conn, addr = servidor.accept()
+        while not detener.is_set():
+            try:
+                conn, addr = servidor.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                if detener.is_set():
+                    break
+                raise
 
             hilo = threading.Thread(
                 target=escuchar_monitor,
@@ -86,6 +94,7 @@ def servidor_monitor(puerto):
 
     finally:
         servidor.close()
+        print("[ENGINE] Servidor de sockets cerrado.", flush=True)
 
 """KAFKA"""
 
@@ -127,11 +136,19 @@ def crear_consumidor_kafka(ip, puerto):
     
 
 #funcion para simular las fugas del monitor
-def menu():
+def menu(detener):
+
     global estado
-    while True:
-        #se hace un hilo independinete para no bloquear lo demas
-        orden = input("Pulsa F para fuga o R para reparar")
+    
+    while not detener.is_set():
+        try:
+            #se hace un hilo independinete para no bloquear lo demas
+            orden = input("Pulsa F para fuga o R para reparar")
+
+        except EOFError:
+            detener.set()
+            break
+        
         if orden == 'F':
             estado = "KO"
             print("SE ha puesto en fuga, se le comunicara al monitor")
@@ -155,11 +172,15 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
     caudal = 12
     volumen_acumulado = 0.0
     tiempo_inicio = time.monotonic()
+    interrumpido = False
+    motivo_interrupcion = None
 
     try:
         for segundo in range(tiempo_riego):
             if estado != "OK":
-                print("[ENGINE] Riego Interrumpido por una incidencia.", flush = True)
+                interrumpido = True
+                motivo_interrupcion = "FUGA"
+                print("[ENGINE] Riego Interrumpido por una fuga.", flush = True)
                 break
 
             time.sleep(1)
@@ -173,6 +194,15 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
             )
 
             enviar_evento_engine(productor, mensaje)
+
+        if interrumpido:
+            mensaje_interrupcion = (
+                f"{id_peticion}#RIEGO_INTERRUMPIDO#"
+                f"{id_operario}#{id_estacion}#"
+                f"{motivo_interrupcion}"
+            )
+
+            enviar_evento_engine(productor, mensaje_interrupcion)
 
         tiempo_transcurrido = int(time.monotonic() - tiempo_inicio)
 
@@ -243,14 +273,16 @@ def main():
     
     config = load_engine_config()
 
-    print("[ENGINE] Iniciando...")
+    print("[ENGINE] Iniciando...", flush=True)
     print(
         f"[ENGINE] Sockets: "
-        f"{config.monitor_host}:{config.monitor_port}"
+        f"{config.monitor_host}:{config.monitor_port}",
+        flush=True
     )
     print(
         f"[ENGINE] Kafka: "
-        f"{config.kafka_host}:{config.kafka_port}"
+        f"{config.kafka_host}:{config.kafka_port}",
+        flush=True
     )
 
     if len(sys.argv) >= 2:
@@ -258,38 +290,44 @@ def main():
     else:
         puerto =  6000
 
-    """SOCKETS"""
-    #arrancar el servidor en hilo aparte
-    hilo_servidor = threading.Thread(target=servidor_monitor, args=(puerto, ), daemon=True)
-    hilo_servidor.start()
-
-    hilo_fuga = threading.Thread(target=menu, daemon=True)
-    hilo_fuga.start()
-
-    """KAFKA"""
-
-    consumidor = crear_consumidor_kafka(config.kafka_host, config.kafka_port)
-
-    productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
-
     detener = threading.Event()
+    consumidor = None
+    productor = None
+    hilo_servidor = None
+    hilo_kafka = None
 
-    hilo_kafka = threading.Thread(target=escuchar_ordenes, args=(consumidor, productor, detener), daemon=True)
-
-    hilo_kafka.start()
-
-    print("\n[ENGINE] Conexiones Kafka creadas.", flush=True)
-    
     try:
-        while True:
-            time.sleep(1)
+
+        consumidor = crear_consumidor_kafka(config.kafka_host, config.kafka_port)
+
+        productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
+
+        """SOCKETS"""
+        #arrancar el servidor en hilo aparte
+        hilo_servidor = threading.Thread(target=servidor_monitor, args=(puerto, detener), daemon=True)
+        hilo_servidor.start()
+
+        """KAFKA"""
+
+        hilo_kafka = threading.Thread(target=escuchar_ordenes, args=(consumidor, productor, detener), daemon=True)
+
+        hilo_kafka.start()
+
+        print("\n[ENGINE] Conexiones Kafka creadas.", flush=True)
+
+        menu(detener)
+
     except KeyboardInterrupt:
         print("\n[ENGINE] Cerrando...", flush=True)
 
     finally:
         detener.set()
-        hilo_kafka.join(timeout=3)
-        productor.close(timeout=5)
+        if hilo_servidor is not None:
+            hilo_servidor.join(timeout=2)
+        if hilo_kafka is not None:
+            hilo_kafka.join(timeout=3)
+        if productor is not None:
+            productor.close(timeout=5)
         print("[ENGINE] Cerrado.", flush=True)
 
 if __name__ == "__main__":
