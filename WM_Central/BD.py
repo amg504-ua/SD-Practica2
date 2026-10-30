@@ -80,3 +80,17 @@ def devolver_estaciones():
     conexion.close()
     return estaciones
 
+def existe_estacion(id_estacion):
+    """Comprueba si una estación ya está registrada en SQLite."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+
+    cursor.execute(
+        "SELECT 1 FROM WATERING_STATIONS WHERE id_estacion = ?",
+        (id_estacion,)
+    )
+
+    existe = cursor.fetchone() is not None
+    conexion.close()
+
+    return existe
