@@ -166,6 +166,14 @@ def handle_client(conn, addr, productor_kafka):
                             clientes_conectados[id_estacion].send(("OUT_OF_ORDER\n").encode(FORMAT))
                             BD.modificar_estados(id_estacion, "FUERA DE SERVICIO")
                             print(f"OUT_OF_ORDER ENVIADO A {id_estacion}", flush=True)
+                            estaciones = BD.devolver_estaciones()
+                            ubicacion = "N/D"
+                            for e in estaciones:
+                                if e[0] == id_estacion:
+                                    ubicacion = e[1]
+                                    break
+                            
+                            enviar_estado_fo(productor_kafka, id_estacion, "FUERA DE SERVICIO", ubicacion)
                         respuesta = f"OK#Bloquea {id_estacion}"
                     
                     #orden de la central para activar una estacion
@@ -175,6 +183,15 @@ def handle_client(conn, addr, productor_kafka):
                             clientes_conectados[id_estacion].send(("ACTIVACION\n").encode(FORMAT))
                             BD.modificar_estados(id_estacion, "DISPONIBLE")
                             print(f"ACTIVACION ENVIADO A {id_estacion}", flush=True)
+                            estaciones = BD.devolver_estaciones()
+                            ubicacion = "N/D"
+                            for e in estaciones:
+                                if e[0] == id_estacion:
+                                    ubicacion = e[1]
+                                    break
+                                                    
+                            enviar_estado_fo(productor_kafka, id_estacion, "FUERA DE SERVICIO", ubicacion)
+
                         respuesta = f"OK#ACTIVANDO {id_estacion}"
 
                     #orden de la central pra regar una estacion
@@ -192,9 +209,12 @@ def handle_client(conn, addr, productor_kafka):
                         print(f"ORDEN DE RIEGO ENVIADA A {id_estacion}", flush=True)
                         respuesta = f"OK#Riego iniciado en {id_estacion}"
 
-                    elif tipo in ["ORDEN_OoO_RECIBIDO", "ORDEN_ACTIVACION_RECIBIDA"]: 
-                        print(f"Estacion disponible: {id_estacion}")
-                        respuesta = f"CONEXION_OK#{id_estacion}"
+                    elif tipo == "ORDEN_ACTIVACION_RECIBIDA": 
+                        print(f"Estacion activada: {id_estacion}")
+                        respuesta = f"OK#{id_estacion}"
+                    elif tipo == "ORDEN_OoO_RECIBIDO": 
+                        print(f"Estacion bloqueada: {id_estacion}")
+                        respuesta = f"OK#{id_estacion}"
 
                     else:
                         respuesta = F"ERROR#Formato incorrecto {msg}"
