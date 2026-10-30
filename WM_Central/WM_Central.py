@@ -190,7 +190,7 @@ def handle_client(conn, addr, productor_kafka):
                                     ubicacion = e[1]
                                     break
                                                     
-                            enviar_estado_fo(productor_kafka, id_estacion, "FUERA DE SERVICIO", ubicacion)
+                            enviar_estado_fo(productor_kafka, id_estacion, "DISPONIBLE", ubicacion)
 
                         respuesta = f"OK#ACTIVANDO {id_estacion}"
 
