@@ -110,6 +110,52 @@ def handle_client(conn, addr, productor_kafka):
                         )
                         print(f"Estacion CON FUGA RESUELTA: {id_estacion}")
                         respuesta = f"FUGA_RESUELTA_CONFIRMACION#{id_estacion}"
+
+                    elif tipo == "AVISO_AVERIA" and len(partes) == 2:
+                        id_estacion = partes[1]
+                        BD.modificar_estados(id_estacion, "AVERIADA")
+
+                        estaciones = BD.devolver_estaciones()
+                        ubicacion = next(
+                            (e[1] for e in estaciones if e[0] == id_estacion),
+                            "N/D"
+                        )
+
+                        enviar_estado_fo(
+                            productor_kafka,
+                            id_estacion,
+                            "AVERIADA",
+                            ubicacion
+                        )
+
+                        print(
+                            f"[ESTACIÓN] {id_estacion} pasa a AVERIADA.",
+                            flush=True
+                        )
+                        respuesta = f"AVISO_AVERIA_RECIBIDO#{id_estacion}"
+
+                    elif tipo == "AVERIA_RESUELTA" and len(partes) == 2:
+                        id_estacion = partes[1]
+                        BD.modificar_estados(id_estacion, "DISPONIBLE")
+
+                        estaciones = BD.devolver_estaciones()
+                        ubicacion = next(
+                            (e[1] for e in estaciones if e[0] == id_estacion),
+                            "N/D"
+                        )
+
+                        enviar_estado_fo(
+                            productor_kafka,
+                            id_estacion,
+                            "DISPONIBLE",
+                            ubicacion
+                        )
+
+                        print(
+                            f"[ESTACIÓN] Avería resuelta en {id_estacion}.",
+                            flush=True
+                        )
+                        respuesta = f"AVERIA_RESUELTA_CONFIRMACION#{id_estacion}"
                     
                     elif tipo in ["ORDEN_OoO_RECIBIDO", "ORDEN_ACTIVACION_RECIBIDA"]: 
                         print(f"Estacion disponible: {id_estacion}")

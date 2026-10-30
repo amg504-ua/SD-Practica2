@@ -159,24 +159,44 @@ def main():
             hilo_central.start()
 
             socket_engine = None
-            fuga = False
+            incidencia = False
 
             while True:
                 estado_engine, socket_engine = comprobar_engine(SERVER_ENGINE, PORT_ENGINE, ID_Estacion, socket_engine)
 
-                if estado_engine != "OK":
-                    if not fuga:
-                        fuga = True
-                        print(f"[MONITOR] Incidencia detectada en {ID_Estacion}: "
-                              f"{estado_engine}. Avisando a Central.", flush=True)
+                if estado_engine == "FUGA":
+                    if incidencia != "FUGA":
+                        incidencia = "FUGA"
+                        print(
+                            f"[MONITOR][FUGA] Fuga detectada en "
+                            f"{ID_Estacion}. Avusando a Central.", flush=True
+                        )
                         send(cliente, f"AVISO_FUGA#{ID_Estacion}")
-                else:
-                    if fuga:
-                        fuga = False
-                        print(f"[MONITOR] Engine recuperado en {ID_Estacion}. "
-                              "Avisando a Central.", flush=True)
+                elif estado_engine == "DESCONECTADA":
+                    if incidencia != "AVERIADA":
+                        incidencia = "AVERIADA"
+                        print(
+                            f"[MONITOR][AVERIADA] Engine de "
+                            f"{ID_Estacion} averiado. Avisando a Central.", flush=True
+                        )
+                        send(cliente, f"AVISO_AVERIA#{ID_Estacion}")
+                elif estado_engine == "OK":
+                    if incidencia == "FUGA":
+                        print(
+                            f"[MONITOR] Fuga resuelta en {ID_Estacion}.",
+                            flush=True
+                        )
                         send(cliente, f"FUGA_RESUELTA#{ID_Estacion}")
-                
+
+                    elif incidencia == "AVERIADA":
+                        print(
+                            f"[MONITOR] Engine recuperado en {ID_Estacion}.",
+                            flush=True
+                        )
+                        send(cliente, f"AVERIA_RESUELTA#{ID_Estacion}")
+
+                    incidencia = None
+
                 time.sleep(1)
 
         except ConnectionRefusedError:
