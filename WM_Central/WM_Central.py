@@ -50,12 +50,14 @@ def handle_client(conn, addr, productor_kafka):
                         id_estacion = partes[1]
                         ubicacion = partes[2]
                         id_estacionA = id_estacion
-                        
-                        print(f"Estacion: {id_estacion} en {ubicacion}")
-                        #guardar en la bd
-                        BD.guardar_estacion(id_estacion, ubicacion)
-
-                        respuesta = f"REGISTRO_OK#{id_estacion}"
+                        if BD.existe_estacion(id_estacion):
+                            respuesta = f"REGISTRO_EXISTENTE#{id_estacion}"
+                        else:    
+                            #guardar en la bd
+                            BD.guardar_estacion(id_estacion, ubicacion)
+                            print(f"[REGISTRO] Nueva estación registrada: "
+                                  f"{id_estacion} en {ubicacion}.")
+                            respuesta = f"REGISTRO_OK#{id_estacion}"
                     
                     #si la estacion se quiere conectar y ya esta registrada
                     elif tipo == "CONEXION" and len(partes) == 2:
@@ -108,6 +110,52 @@ def handle_client(conn, addr, productor_kafka):
                         )
                         print(f"Estacion CON FUGA RESUELTA: {id_estacion}")
                         respuesta = f"FUGA_RESUELTA_CONFIRMACION#{id_estacion}"
+
+                    elif tipo == "AVISO_AVERIA" and len(partes) == 2:
+                        id_estacion = partes[1]
+                        BD.modificar_estados(id_estacion, "AVERIADA")
+
+                        estaciones = BD.devolver_estaciones()
+                        ubicacion = next(
+                            (e[1] for e in estaciones if e[0] == id_estacion),
+                            "N/D"
+                        )
+
+                        enviar_estado_fo(
+                            productor_kafka,
+                            id_estacion,
+                            "AVERIADA",
+                            ubicacion
+                        )
+
+                        print(
+                            f"[ESTACIÓN] {id_estacion} pasa a AVERIADA.",
+                            flush=True
+                        )
+                        respuesta = f"AVISO_AVERIA_RECIBIDO#{id_estacion}"
+
+                    elif tipo == "AVERIA_RESUELTA" and len(partes) == 2:
+                        id_estacion = partes[1]
+                        BD.modificar_estados(id_estacion, "DISPONIBLE")
+
+                        estaciones = BD.devolver_estaciones()
+                        ubicacion = next(
+                            (e[1] for e in estaciones if e[0] == id_estacion),
+                            "N/D"
+                        )
+
+                        enviar_estado_fo(
+                            productor_kafka,
+                            id_estacion,
+                            "DISPONIBLE",
+                            ubicacion
+                        )
+
+                        print(
+                            f"[ESTACIÓN] Avería resuelta en {id_estacion}.",
+                            flush=True
+                        )
+                        respuesta = f"AVERIA_RESUELTA_CONFIRMACION#{id_estacion}"
                     
                     elif tipo in ["ORDEN_OoO_RECIBIDO", "ORDEN_ACTIVACION_RECIBIDA"]: 
                         print(f"Estacion disponible: {id_estacion}")
@@ -353,6 +401,9 @@ def validar_solicitud_riego(mensaje):
 
     return True, "Solicitud validada correctamente.", solicitud
 
+peticiones_finalizadas = set()
+bloqueo_peticiones = threading.Lock()
+
 def escuchar_eventos_engine(consumidor, productor, detener):
     print("[KAFKA] Escuchando eventos del Engine...", flush=True)
 
@@ -372,6 +423,7 @@ def escuchar_eventos_engine(consumidor, productor, detener):
                         )
                         continue
 
+                    id_peticion = campos[0]
                     tipo = campos[1]
 
                     if tipo == "RIEGO_INTERRUMPIDO":
@@ -387,15 +439,23 @@ def escuchar_eventos_engine(consumidor, productor, detener):
                         enviar_evento_fo(productor, contenido)
                         continue
 
-                    if tipo in ("DATOS_RIEGO", "RESUMEN_RIEGO"):
-                        if len(campos) != 6:
-                            print(
-                                f"[ENGINE] Evento descartado: Formato incorrecto: {contenido}", flush=True
-                            )
-                            continue
-                    else:
-                        print(f"[ENGINE] Evento desconocido: {tipo}", flush=True)
+                    if tipo not in ("DATOS_RIEGO", "RESUMEN_RIEGO"):
+                        print(
+                            f"[ENGINE] Evento desconocido: {tipo}", flush=True
+                        )
                         continue
+
+                    if len(campos) != 6:
+                        print(
+                            f"[ENGINE] Evento descartado: "
+                            f"Formato incorrecto: {contenido}",flush=True
+                        )
+                        continue
+                    with bloqueo_peticiones:
+                        if id_peticion in peticiones_finalizadas:
+                            continue
+                        if tipo == "RESUMEN_RIEGO":
+                            peticiones_finalizadas.add(id_peticion)
 
                     print(f"[ENGINE] Evento recibido: {contenido}", flush=True)
                     enviar_evento_fo(productor, contenido)
