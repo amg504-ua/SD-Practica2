@@ -164,7 +164,7 @@ def handle_client(conn, addr, productor_kafka):
                         id_estacion = partes[1]
                         if id_estacion in clientes_conectados:
                             clientes_conectados[id_estacion].send(("OUT_OF_ORDER\n").encode(FORMAT))
-                            BD.modificar_estados(id_estacion, "OUT OF SERVICE")
+                            BD.modificar_estados(id_estacion, "FUERA DE SERVICIO")
                             print(f"OUT_OF_ORDER ENVIADO A {id_estacion}", flush=True)
                         respuesta = f"OK#Bloquea {id_estacion}"
                     

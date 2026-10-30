@@ -16,7 +16,6 @@ services:
       PYTHONUNBUFFERED: 1
       PYTHONPATH: "."
 
-
   wm-monitor:
     build:
       context: .
@@ -28,7 +27,6 @@ services:
       CENTRAL_HOST: ${CENTRAL_HOST}
       PYTHONUNBUFFERED: 1
       PYTHONPATH: "."
-
 
   wm-fo:
     build:
