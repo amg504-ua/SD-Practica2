@@ -3,8 +3,7 @@ services:
     build:
       context: .
       dockerfile: WM_WateringStation/Engine/Dockerfile
-    image: wm-engine:dev
-    container_name: wm-engine
+
     stdin_open: true
     tty: true
     env_file:
@@ -16,28 +15,26 @@ services:
       MONITOR_PORT: 5001
       PYTHONUNBUFFERED: 1
       PYTHONPATH: "."
-    command: python -u WM_WateringStation/Engine/WM_WS_E.py 6000
+
 
   wm-monitor:
     build:
       context: .
       dockerfile: WM_WateringStation/Monitor/Dockerfile
-    image: wm-monitor:dev
-    container_name: wm-monitor
+
     env_file:
       - .env
     environment:
       CENTRAL_HOST: ${CENTRAL_HOST}
       PYTHONUNBUFFERED: 1
       PYTHONPATH: "."
-    command: python -u WM_WateringStation/Monitor/WM_WS_M.py acela.proxy.rlwy.net 43731 wm-engine 6000 WS-01 "Ubuntu"
+
 
   wm-fo:
     build:
       context: .
       dockerfile: WM_FieldOperator/Dockerfile
-    image: wm-fo:dev
-    container_name: wm-fo
+
     stdin_open: true
     tty: true
     env_file:
@@ -47,4 +44,3 @@ services:
       KAFKA_PORT: ${KAFKA_PORT}
       PYTHONUNBUFFERED: 1
       PYTHONPATH: "."
-    command: python -u WM_FieldOperator/WM_FO.py FO-01
