@@ -1,10 +1,10 @@
 import socket
 import sys
-import os
 import time
 import threading
 from kafka import KafkaConsumer, KafkaProducer
 from Common.config import load_engine_config
+from WM_WateringStation.Engine import engine_db
 
 id_estacion_engine = None
 estacion_identificada = threading.Event()
@@ -180,7 +180,7 @@ def menu(detener):
 
 """RIEGO"""
 
-def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_riego):
+def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_riego, tiempo_inicial=0, volumen_inicial=0.0):
     global estado
 
     print(
@@ -190,13 +190,13 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
     )
 
     caudal = 12
-    volumen_acumulado = 0.0
-    tiempo_inicio = time.monotonic()
+    volumen_acumulado = volumen_inicial
+    tiempo_transcurrido = tiempo_inicial
     interrumpido = False
     motivo_interrupcion = None
 
     try:
-        for segundo in range(tiempo_riego):
+        for segundo in range(tiempo_inicial, tiempo_riego):
             if estado != "OK":
                 interrumpido = True
                 motivo_interrupcion = "FUGA"
@@ -219,7 +219,10 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
                 motivo_interrupcion = "MONITOR_DESCONECTADO"
                 break
 
+            tiempo_transcurrido += 1
             volumen_acumulado += caudal / 60
+
+            engine_db.actualizar_progreso(id_peticion, id_estacion, tiempo_transcurrido, volumen_acumulado)
 
             mensaje = (
                 f"{id_peticion}#DATOS_RIEGO#"
@@ -238,7 +241,7 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
 
             enviar_evento_engine(productor, mensaje_interrupcion)
 
-        tiempo_transcurrido = int(time.monotonic() - tiempo_inicio)
+        #tiempo_transcurrido = int(time.monotonic() - tiempo_inicio)
 
         resumen = (
             f"{id_peticion}#RESUMEN_RIEGO#"
@@ -247,6 +250,8 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
         )
 
         enviar_evento_engine(productor, resumen)
+
+        engine_db.finalizar_riego(id_peticion, id_estacion)
 
         print(
             f"[ENGINE] Riego Finalizado. "
@@ -261,7 +266,41 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
 def escuchar_ordenes(consumidor, productor, detener, mi_id_estacion):
     print("\n[ENGINE] Escuchando órdenes de riego...", flush=True)
 
+    engine_db.inicializar(mi_id_estacion)
+
     try:
+
+        # Esperar a que el Monitor se conecte
+        while not detener.is_set() and not monitor_conectado.wait(timeout=0.5):
+            pass
+
+        if detener.is_set():
+            return
+
+        # Recuperar los riegos pendientes
+        riegos_pendientes = engine_db.obtener_riegos_pendientes(mi_id_estacion)
+
+        for riego in riegos_pendientes:
+            (
+                id_guardado,
+                operario_guardado,
+                estacion_guardada,
+                tiempo_objetivo,
+                tiempo_transcurrido,
+                volumen_acumulado,
+                estado_riego
+            ) = riego
+
+            ejecutar_riego(
+                productor,
+                id_guardado,
+                operario_guardado,
+                estacion_guardada,
+                tiempo_objetivo,
+                tiempo_transcurrido,
+                volumen_acumulado
+            )
+
         while not detener.is_set():
             mensajes = consumidor.poll(timeout_ms=500)
 
@@ -302,7 +341,30 @@ def escuchar_ordenes(consumidor, productor, detener, mi_id_estacion):
                     #    )
                     #    continue
                     
-                    ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_riego)
+                    engine_db.guardar_riego(id_peticion, id_operario, id_estacion, tiempo_riego)
+
+                    riego = engine_db.obtener_riego(id_peticion, id_estacion)
+
+                    if riego is None:
+                        continue
+
+                    (
+                        id_guardado,
+                        operario_guardado,
+                        estacion_guardada,
+                        tiempo_objetivo,
+                        tiempo_transcurrido,
+                        volumen_acumulado,
+                        estado_riego
+                    ) = riego
+
+                    if estado_riego == "FINALIZADO":
+                        continue
+
+                    if estado_riego != "EN_CURSO":
+                        continue
+
+                    ejecutar_riego(productor, id_guardado, operario_guardado, estacion_guardada, tiempo_objetivo, tiempo_transcurrido, volumen_acumulado)
 
     finally:
         consumidor.close()
