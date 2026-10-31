@@ -250,7 +250,6 @@ def forzar_fuera_servicio(id_estacion, productor_kafka):
     else:
         print(f"La estacion {id_estacion} no se ha conectado", flush=True)
 
-
 def forzar_activacion(id_estacion, productor_kafka):
     if id_estacion in clientes_conectados:
         conn = clientes_conectados[id_estacion]
@@ -272,9 +271,6 @@ def forzar_activacion(id_estacion, productor_kafka):
     else:
         print(f"La estacion {id_estacion} no se ha conectado", flush=True)
             
-            
-
-
 def servidor_sockets(puerto, productor):
     SERVER = socket.gethostbyname(socket.gethostname())
     ADDR = (SERVER, puerto)
@@ -363,6 +359,7 @@ def enviar_orden_engine(productor, solicitud):
         print(f"[KAFKA] Error enviando la orden al Engine: {error}", flush=True)
         
         return False
+
 #======= CONSUMIDORES =======#
 
 def crear_consumidor_kafka(ip, puerto, topic):
@@ -425,13 +422,65 @@ def escuchar_solicitudes_riego(consumidor, productor, detener):
 
                     if valida:
                         enviado = enviar_orden_engine(productor, solicitud)
+                        if enviado:
+                            BD.modificar_estados(id_estacion, "REGANDO")
 
-                        if not enviado:
+                            estaciones = BD.devolver_estaciones()
+                            ubicacion = next(
+                                (e[1] for e in estaciones if e[0] == id_estacion),
+                                "N/D"
+                            )
+
+                            enviar_estado_fo(productor, id_estacion, "REGANDO", ubicacion)
+                            print(
+                                f"[CENTRAL] Estación {id_estacion} pasa a REGANDO.",
+                                flush=True
+                            )
+
+                        else:
                             print(
                                 f"[ERROR] No se pudo enviar la orden de riego "
                                 f"{solicitud['id_peticion']}",
                                 flush=True
                             )
+    finally:
+        consumidor.close()
+
+def escuchar_avisos_nuevo_fo(consumidor, productor, detener):
+    """Escucha los avisos de conexión de nuevos FO y les envía los estados actuales."""
+
+    print("[KAFKA] Escuchando conexiones de nuevos FO...", flush=True)
+
+    try:
+        while not detener.is_set():
+            mensajes = consumidor.poll(timeout_ms=500)
+
+            for registros in mensajes.values():
+                for mensaje in registros:
+                    campos = mensaje.value.split("#")
+
+                    if len(campos) != 2 or campos[0] != "NUEVO_FO_CONECTADO":
+                        continue
+
+                    id_operador = campos[1]
+
+                    print(f"[CENTRAL] Nuevo FO conectado: {id_operador}", flush=True)
+
+                    estaciones = BD.devolver_estaciones()
+
+                    for estacion in estaciones:
+                        id_estacion, ubicacion, estado = estacion
+
+                        enviar_estado_fo(productor, id_estacion, estado, ubicacion, id_operario=id_operador)
+
+                    resumenes = BD.devolver_resumenes_pendientes(id_operador)
+
+                    for resumen in resumenes:
+                        print(
+                            f"[CENTRAL] Reenviando resumen pendiente al FO {id_operador}: {resumen}", flush=True
+                        )
+                        enviar_evento_fo(productor, resumen)
+    
     finally:
         consumidor.close()
 
@@ -484,6 +533,45 @@ def validar_solicitud_riego(mensaje):
     }
 
     return True, "Solicitud validada correctamente.", solicitud
+
+def escuchar_confirmaciones_fo(consumidor, detener):
+    """Recibe las confirmaciones de recepción de los resúmenes."""
+
+    print("[KAFKA] Escuchando confirmaciones de los FO...", flush=True)
+
+    try:
+        while not detener.is_set():
+            mensajes = consumidor.poll(timeout_ms=500)
+
+            for registros in mensajes.values():
+                for mensaje in registros:
+                    campos = mensaje.value.split("#")
+
+                    if len(campos) != 3:
+                        print(
+                            f"[ACK] Confirmación descartada: {mensaje.value}",
+                            flush=True
+                        )
+                        continue
+
+                    id_peticion, tipo, id_operario = campos
+
+                    if tipo != "RESUMEN_RECIBIDO":
+                        continue
+
+                    BD.eliminar_resumen_pendiente(
+                        id_peticion,
+                        id_operario
+                    )
+
+                    print(
+                        f"[ACK] Resumen de la petición {id_peticion} "
+                        f"confirmado por el FO {id_operario}.",
+                        flush=True
+                    )
+
+    finally:
+        consumidor.close()
 
 peticiones_finalizadas = set()
 bloqueo_peticiones = threading.Lock()
@@ -541,6 +629,33 @@ def escuchar_eventos_engine(consumidor, productor, detener):
                         if tipo == "RESUMEN_RIEGO":
                             peticiones_finalizadas.add(id_peticion)
 
+                    if tipo == "RESUMEN_RIEGO":
+
+                        id_operario = campos[2]
+
+                        BD.guardar_resumen_pendiente(id_peticion, id_operario, contenido)
+
+                        id_estacion = campos[3]
+
+                        estaciones = BD.devolver_estaciones()
+
+                        estacion = next(
+                            (e for e in estaciones if e[0] == id_estacion),
+                            None
+                        )
+
+                        if estacion is not None and estacion[2] == "REGANDO":
+
+                            BD.modificar_estados(id_estacion, "DISPONIBLE")
+
+                            enviar_estado_fo(
+                                productor,
+                                id_estacion,
+                                "DISPONIBLE",
+                                estacion[1]
+                            )
+
+
                     print(f"[ENGINE] Evento recibido: {contenido}", flush=True)
                     enviar_evento_fo(productor, contenido)
     
@@ -549,9 +664,7 @@ def escuchar_eventos_engine(consumidor, productor, detener):
 
 """MAIN"""
 
-def central():
-    '''Esto seguramente lo divida en dos funciones diferentes, pero
-    es para que se entienda el concepto.'''
+def main():
     config = load_central_config()
 
     print("[CENTRAL] Iniciando...")
@@ -562,33 +675,29 @@ def central():
 
     detener = threading.Event()
     consumidor = None
+    consumidor_engine = None
+    consumidor_nuevo_fo = None
+    consumidor_confirmaciones = None
     productor = None
+
     hilo_kafka = None
+    hilo_kafka_engine = None
+    hilo_nuevo_fo = None
+    hilo_confirmaciones = None
     hilo_sockets = None
     
     """BASE DE DATOS"""
 
     BD.inicializar()
 
-    #ESTACIÓN CREADA PRUEBAS
-    #BD.guardar_estacion("WS_TEST", "Pruebas", "DESCONECTADA")
-    #BD.modificar_estados("WS_TEST", "DISPONIBLE")
-
-    estaciones = BD.devolver_estaciones()
-
-    for estacion in estaciones:
-        print(f"[ESTACIÓN] : {estacion[0]}, [UBICACIÓN] : {estacion[1]}, [ESTADO] : {estacion[2]} .")
-
     try:
     
         """KAFKA"""
         consumidor = crear_consumidor_kafka(config.kafka_host, config.kafka_port, "fo.peticion_riego.ce")
         consumidor_engine = crear_consumidor_kafka(config.kafka_host, config.kafka_port, "e.eventos.ce")
+        consumidor_nuevo_fo = crear_consumidor_kafka(config.kafka_host, config.kafka_port, "fo.estados.ce")
+        consumidor_confirmaciones = crear_consumidor_kafka(config.kafka_host, config.kafka_port, "fo.confirmaciones.ce")
         productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
-
-        for estacion in BD.devolver_estaciones():
-            id_estacion, ubicacion, estado = estacion
-            enviar_estado_fo(productor, id_estacion, estado, ubicacion)            
 
         print("[CENTRAL] Conexiones Kafka creadas.")
 
@@ -602,6 +711,12 @@ def central():
 
         hilo_kafka_engine = threading.Thread(target=escuchar_eventos_engine, args=(consumidor_engine, productor, detener), daemon=True)
         hilo_kafka_engine.start()
+
+        hilo_nuevo_fo = threading.Thread(target=escuchar_avisos_nuevo_fo, args=(consumidor_nuevo_fo, productor, detener), daemon=True)
+        hilo_nuevo_fo.start()
+
+        hilo_confirmaciones = threading.Thread(target=escuchar_confirmaciones_fo, args=(consumidor_confirmaciones, detener),daemon=True)
+        hilo_confirmaciones.start()
 
         print("[CENTRAL] Servidor iniciado.")
 
@@ -618,7 +733,13 @@ def central():
             hilo_kafka.join(timeout=3)
 
         if hilo_kafka_engine is not None:
-            hilo_kafka_engine.join(timeout=3) 
+            hilo_kafka_engine.join(timeout=3)
+
+        if hilo_nuevo_fo is not None:
+            hilo_nuevo_fo.join(timeout=3)
+
+        if hilo_confirmaciones is not None:
+            hilo_confirmaciones.join(timeout=3)
 
         if productor is not None:
             productor.close(timeout=5)
@@ -626,4 +747,4 @@ def central():
         print("[CENTRAL] Cerrada.")
 
 if __name__ == "__main__":
-   central()
+   main()
