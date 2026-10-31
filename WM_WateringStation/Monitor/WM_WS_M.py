@@ -4,6 +4,7 @@ import time
 import threading
 
 FORMAT = 'utf-8'
+estacion_bloqueada = False
 
 """SOCKETS"""
 
@@ -21,6 +22,7 @@ def recibir_msg(socketC):
     return msg.strip()
 
 def escuchar_central(cliente, id_estacion):
+    global estacion_bloqueada
     while True:
         try:
             msg = recibir_msg(cliente)
@@ -37,10 +39,12 @@ def escuchar_central(cliente, id_estacion):
                 orden = partes[0]    
 
                 if orden == "OUT_OF_ORDER":
+                    estacion_bloqueada = True
                     print(f"[MONITOR] Orden recibida de central: Estacion fuera de servicio.") #Naranja
                     send(cliente, f"ORDEN_OoO_RECIBIDO#{id_estacion}")
 
                 elif orden == "ACTIVACION":
+                    estacion_bloqueada = False
                     print(f"[MONITOR] Orden recibida de central: Estacion activada.") #Verde
                     send(cliente, f"ORDEN_ACTIVACION_RECIBIDA#{id_estacion}")
 
@@ -52,6 +56,9 @@ def escuchar_central(cliente, id_estacion):
 
 #funcion para preguntar al engine cada segundo
 def comprobar_engine(ip_engine, puerto_engine, id_estacion, socket_engine):
+    global estacion_bloqueada
+    if estacion_bloqueada:
+        return "FUERA_DE_SERVICIO", socket_engine
     try:
         if socket_engine is None:
             #crear el socket y conectarse, ademas del timeout de dos segundos, si tarda mas fuera
@@ -128,13 +135,18 @@ def main():
             print (f"Establecida conexión en [{ADDR_CENTRAL}]")
 
             mensaje = f"REGISTRO#{ID_Estacion}#{Ubicacion}"
-            print("Envio al servidor: ", mensaje)
-            send(cliente, mensaje)#enviar la orden
-            respuesta = cliente.recv(2048).decode(FORMAT).strip()#esperar
-            print(f"Recibido: {respuesta}")
+            send(cliente, mensaje)
 
-            if respuesta != f"REGISTRO_OK#{ID_Estacion}":
-                print("Registro denegado")
+            respuesta = recibir_msg(cliente)
+
+            if respuesta == f"REGISTRO_OK#{ID_Estacion}":
+                print(f"[MONITOR] Estación {ID_Estacion} registrada correctamente.")
+
+            elif respuesta == f"REGISTRO_EXISTENTE#{ID_Estacion}":
+                print(f"[MONITOR] Estación {ID_Estacion} ya registrada. Reconectando...")
+
+            else:
+                print(f"[MONITOR] Registro denegado: {respuesta}")
                 cliente.close()#cerrar
                 sys.exit(1)
 
@@ -154,24 +166,47 @@ def main():
             hilo_central.start()
 
             socket_engine = None
-            fuga = False
+            incidencia = False
 
             while True:
                 estado_engine, socket_engine = comprobar_engine(SERVER_ENGINE, PORT_ENGINE, ID_Estacion, socket_engine)
-
-                if estado_engine != "OK":
-                    if not fuga:
-                        fuga = True
-                        print(f"[MONITOR] Incidencia detectada en {ID_Estacion}: "
-                              f"{estado_engine}. Avisando a Central.", flush=True)
+                if estado_engine == "FUERA_DE_SERVICIO":
+                    if incidencia != "BLOQUEADA":
+                        incidencia = "BLOQUEADA"
+                        print(f"[MONITOR] Estacion {ID_Estacion} bloqueada", flush=True)
+                elif estado_engine == "FUGA":
+                    if incidencia != "FUGA":
+                        incidencia = "FUGA"
+                        print(
+                            f"[MONITOR][FUGA] Fuga detectada en "
+                            f"{ID_Estacion}. Avusando a Central.", flush=True
+                        )
                         send(cliente, f"AVISO_FUGA#{ID_Estacion}")
-                else:
-                    if fuga:
-                        fuga = False
-                        print(f"[MONITOR] Engine recuperado en {ID_Estacion}. "
-                              "Avisando a Central.", flush=True)
+                elif estado_engine == "DESCONECTADA":
+                    if incidencia != "AVERIADA":
+                        incidencia = "AVERIADA"
+                        print(
+                            f"[MONITOR][AVERIADA] Engine de "
+                            f"{ID_Estacion} averiado. Avisando a Central.", flush=True
+                        )
+                        send(cliente, f"AVISO_AVERIA#{ID_Estacion}")
+                elif estado_engine == "OK":
+                    if incidencia == "FUGA":
+                        print(
+                            f"[MONITOR] Fuga resuelta en {ID_Estacion}.",
+                            flush=True
+                        )
                         send(cliente, f"FUGA_RESUELTA#{ID_Estacion}")
-                
+
+                    elif incidencia == "AVERIADA":
+                        print(
+                            f"[MONITOR] Engine recuperado en {ID_Estacion}.",
+                            flush=True
+                        )
+                        send(cliente, f"AVERIA_RESUELTA#{ID_Estacion}")
+
+                    incidencia = None
+
                 time.sleep(1)
 
         except ConnectionRefusedError:

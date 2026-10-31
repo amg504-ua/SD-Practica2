@@ -4,6 +4,11 @@ import time
 import threading
 from kafka import KafkaConsumer, KafkaProducer
 from Common.config import load_engine_config
+from WM_WateringStation.Engine import engine_db
+
+id_estacion_engine = None
+estacion_identificada = threading.Event()
+monitor_conectado = threading.Event()
 
 """SOCKETS"""
 
@@ -24,7 +29,11 @@ def recibir_msg(socketC):
 
 def escuchar_monitor(conn, addr):
     print(f"Monitor conectado desde {addr}")
+    global monitor_conectado
+    monitor_conectado.set()
     conectado = True
+
+    global id_estacion_engine
 
     while conectado:
         try:
@@ -45,22 +54,33 @@ def escuchar_monitor(conn, addr):
 
                 if orden == "CONEXION_ENGINE":
                     id_estacion = partes[1]
+                    id_estacion_engine = id_estacion
+                    estacion_identificada.set()
+                    monitor_conectado.set()
                     print(f"Conectado con el monitor de estacion {id_estacion}")
                     send(conn, f"CONEXION_OK#{id_estacion}")
 
                 elif orden == "COMPROBACION_ESTADO_WS":
                     id_estacion = partes[1]
 
+                    if id_estacion != id_estacion_engine:
+                        send(conn, f"KO#{id_estacion}")
+                        continue
+
                     if estado == "OK":
                         send(conn, f"ESTADO_OK#{id_estacion}")
                     else:
-
                         send(conn, f"KO#{id_estacion}")
                 
         except (ConnectionError, OSError) as e:
             print(f"Error con el monitor: {e}")
             conectado = False
+    monitor_conectado.clear()
     conn.close()
+
+    print(
+        f"[ENGINE][AVISO] Se ha perdido la conexión con el Monitor de {id_estacion_engine}", flush=True
+    )
 
 def servidor_monitor(puerto, detener):
     SERVER = socket.gethostbyname(socket.gethostname())
@@ -123,11 +143,11 @@ def enviar_evento_engine(productor, mensaje):
 
 #======= CONSUMIDORES =======#
 
-def crear_consumidor_kafka(ip, puerto):
+def crear_consumidor_kafka(ip, puerto, id_estacion):
     return KafkaConsumer(
             "ce.ordenes.e",
             bootstrap_servers=f"{ip}:{puerto}",
-            group_id="wm-engine-ordenes",
+            group_id=f"wm-engine-{id_estacion}",
             #group_id=f"wm-engine-{id_estacion}",
             auto_offset_reset="latest",
             enable_auto_commit=True,
@@ -160,7 +180,7 @@ def menu(detener):
 
 """RIEGO"""
 
-def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_riego):
+def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_riego, tiempo_inicial=0, volumen_inicial=0.0):
     global estado
 
     print(
@@ -170,22 +190,39 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
     )
 
     caudal = 12
-    volumen_acumulado = 0.0
-    tiempo_inicio = time.monotonic()
+    volumen_acumulado = volumen_inicial
+    tiempo_transcurrido = tiempo_inicial
     interrumpido = False
     motivo_interrupcion = None
 
     try:
-        for segundo in range(tiempo_riego):
+        for segundo in range(tiempo_inicial, tiempo_riego):
             if estado != "OK":
                 interrumpido = True
                 motivo_interrupcion = "FUGA"
                 print("[ENGINE] Riego Interrumpido por una fuga.", flush = True)
                 break
 
+            if not monitor_conectado.is_set():
+                interrumpido = True
+                motivo_interrupcion = "MONITOR_DESCONECTADO"
+                print(
+                    "[ENGINE][AVISO] Riego Interrumpido: "
+                    "el Monitor está desconectado.", flush=True
+                )
+                break
+
             time.sleep(1)
 
+            if not monitor_conectado.is_set():
+                interrumpido = True
+                motivo_interrupcion = "MONITOR_DESCONECTADO"
+                break
+
+            tiempo_transcurrido += 1
             volumen_acumulado += caudal / 60
+
+            engine_db.actualizar_progreso(id_peticion, id_estacion, tiempo_transcurrido, volumen_acumulado)
 
             mensaje = (
                 f"{id_peticion}#DATOS_RIEGO#"
@@ -204,7 +241,7 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
 
             enviar_evento_engine(productor, mensaje_interrupcion)
 
-        tiempo_transcurrido = int(time.monotonic() - tiempo_inicio)
+        #tiempo_transcurrido = int(time.monotonic() - tiempo_inicio)
 
         resumen = (
             f"{id_peticion}#RESUMEN_RIEGO#"
@@ -213,6 +250,8 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
         )
 
         enviar_evento_engine(productor, resumen)
+
+        engine_db.finalizar_riego(id_peticion, id_estacion)
 
         print(
             f"[ENGINE] Riego Finalizado. "
@@ -224,10 +263,44 @@ def ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_rieg
     finally:
         print("[ENGINE] Estación a la espera de nuevas órdenes.", flush=True)
         
-def escuchar_ordenes(consumidor, productor, detener):
+def escuchar_ordenes(consumidor, productor, detener, mi_id_estacion):
     print("\n[ENGINE] Escuchando órdenes de riego...", flush=True)
 
+    engine_db.inicializar(mi_id_estacion)
+
     try:
+
+        # Esperar a que el Monitor se conecte
+        while not detener.is_set() and not monitor_conectado.wait(timeout=0.5):
+            pass
+
+        if detener.is_set():
+            return
+
+        # Recuperar los riegos pendientes
+        riegos_pendientes = engine_db.obtener_riegos_pendientes(mi_id_estacion)
+
+        for riego in riegos_pendientes:
+            (
+                id_guardado,
+                operario_guardado,
+                estacion_guardada,
+                tiempo_objetivo,
+                tiempo_transcurrido,
+                volumen_acumulado,
+                estado_riego
+            ) = riego
+
+            ejecutar_riego(
+                productor,
+                id_guardado,
+                operario_guardado,
+                estacion_guardada,
+                tiempo_objetivo,
+                tiempo_transcurrido,
+                volumen_acumulado
+            )
+
         while not detener.is_set():
             mensajes = consumidor.poll(timeout_ms=500)
 
@@ -258,10 +331,40 @@ def escuchar_ordenes(consumidor, productor, detener):
                         print("[ENGINE] Duración de riego inválida.", flush=True)
                         continue
 
-                    #if id_estacion != mi_id_estacion:
-                    #    continue
+                    if id_estacion != mi_id_estacion:
+                        continue
 
-                    ejecutar_riego(productor, id_peticion, id_operario, id_estacion, tiempo_riego)
+                    #if not monitor_conectado.is_set():
+                    #    print(
+                    #        "[ENGINE][AVISO] Orden rechazada: el Monitor está desconectado.",
+                    #        flush=True
+                    #    )
+                    #    continue
+                    
+                    engine_db.guardar_riego(id_peticion, id_operario, id_estacion, tiempo_riego)
+
+                    riego = engine_db.obtener_riego(id_peticion, id_estacion)
+
+                    if riego is None:
+                        continue
+
+                    (
+                        id_guardado,
+                        operario_guardado,
+                        estacion_guardada,
+                        tiempo_objetivo,
+                        tiempo_transcurrido,
+                        volumen_acumulado,
+                        estado_riego
+                    ) = riego
+
+                    if estado_riego == "FINALIZADO":
+                        continue
+
+                    if estado_riego != "EN_CURSO":
+                        continue
+
+                    ejecutar_riego(productor, id_guardado, operario_guardado, estacion_guardada, tiempo_objetivo, tiempo_transcurrido, volumen_acumulado)
 
     finally:
         consumidor.close()
@@ -295,21 +398,27 @@ def main():
     productor = None
     hilo_servidor = None
     hilo_kafka = None
+    
 
     try:
-
-        consumidor = crear_consumidor_kafka(config.kafka_host, config.kafka_port)
-
-        productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
 
         """SOCKETS"""
         #arrancar el servidor en hilo aparte
         hilo_servidor = threading.Thread(target=servidor_monitor, args=(puerto, detener), daemon=True)
         hilo_servidor.start()
 
+        if not estacion_identificada.wait(timeout=60):
+            raise TimeoutError(
+                "El Monitor no ha enviado el ID de estación en 60 segundos."
+            )
+
         """KAFKA"""
 
-        hilo_kafka = threading.Thread(target=escuchar_ordenes, args=(consumidor, productor, detener), daemon=True)
+        consumidor = crear_consumidor_kafka(config.kafka_host, config.kafka_port, id_estacion_engine)
+
+        productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
+
+        hilo_kafka = threading.Thread(target=escuchar_ordenes, args=(consumidor, productor, detener, id_estacion_engine), daemon=True)
 
         hilo_kafka.start()
 
