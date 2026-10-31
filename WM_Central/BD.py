@@ -32,10 +32,23 @@ def inicializar():
     CREATE TABLE IF NOT EXISTS WATERING_STATIONS (
             id_estacion TEXT PRIMARY KEY,
             ubicacion TEXT NOT NULL,
-            estado TEXT NOT NULL
+            estado TEXT NOT NULL,
+            caudal REAL DEFAULT 0.0,
+            volumen REAL DEFAULT 0.0,
+            operario TEXT DEFAULT '-'
         )
     ''')
-    creador.execute("UPDATE WATERING_STATIONS SET ESTADO = 'DESCONECTADA'")
+    creador.execute("PRAGMA table_info(WATERING_STATIONS)")
+    columnas = {fila[1] for fila in creador.fetchall()}
+    for nombre, definicion in (
+        ("caudal", "REAL DEFAULT 0.0"),
+        ("volumen", "REAL DEFAULT 0.0"),
+        ("operario", "TEXT DEFAULT '-'"),
+    ):
+        if nombre not in columnas:
+            creador.execute(f"ALTER TABLE WATERING_STATIONS ADD COLUMN {nombre} {definicion}")
+ 
+    creador.execute("UPDATE WATERING_STATIONS SET ESTADO = 'DESCONECTADA', caudal = 0.0, volumen = 0.0, operario = '-'")
 
     conexion.commit()
     conexion.close()
@@ -48,8 +61,8 @@ def guardar_estacion(id_estacion, ubicacion, estado_inicial="DISPONIBLE"):
 
     #insertar si no existe o actualizar si ya existe
     creador.execute('''
-        INSERT OR REPLACE INTO WATERING_STATIONS (id_estacion, ubicacion, estado)
-        VALUES (?, ?, ?)
+        INSERT OR REPLACE INTO WATERING_STATIONS (id_estacion, ubicacion, estado, caudal, volumen, operario)
+        VALUES (?, ?, ?, 0.0, 0.0, '-')
     ''', (id_estacion, ubicacion, estado_inicial))
     
     conexion.commit()
@@ -71,12 +84,54 @@ def modificar_estados(id_estacion, nuevo_estado):
     conexion.close()
     print(f"[ACTUALIZACIÓN] Estado de la estación '{id_estacion}' actualizado a '{nuevo_estado}'.")
 
+#funcion para actualizar los datos de riego
+def actualizar_datos(id_estacion, caudal, volumen, operario, estado="REGANDO"):
+    conexion = obtener_conexion()
+    try:
+        creador = conexion.cursor()
+        creador.execute("SELECT estado FROM WATERING_STATIONS WHERE id_estacion = ?", (id_estacion,))
+        fila = creador.fetchone()
+        anterior = fila[0] if fila else None
+ 
+        creador.execute('''
+            UPDATE WATERING_STATIONS
+            SET caudal = ?, volumen = ?, operario = ?, estado = 'REGANDO'
+            WHERE id_estacion = ? AND estado IN ('DISPONIBLE', 'REGANDO')
+        ''', (caudal, volumen, operario, id_estacion))
+        actualizado = creador.rowcount > 0
+        conexion.commit()
+    finally:
+        conexion.close()
+ 
+    return anterior if actualizado else None
+
+
+def finalizar_riego(id_estacion):
+    conexion = obtener_conexion()
+    try:
+        creador = conexion.cursor()
+        creador.execute("SELECT estado FROM WATERING_STATIONS WHERE id_estacion = ?", (id_estacion,))
+        fila = creador.fetchone()
+        estaba_regando = fila is not None and fila[0] == "REGANDO"
+ 
+        creador.execute('''
+            UPDATE WATERING_STATIONS
+            SET caudal = 0.0, volumen = 0.0, operario = '-',
+                estado = CASE WHEN estado = 'REGANDO' THEN 'DISPONIBLE' ELSE estado END
+            WHERE id_estacion = ?
+        ''', (id_estacion,))
+        conexion.commit()
+    finally:
+        conexion.close()
+ 
+    return estaba_regando
 #funcion para devolver las estaciones registradas
 def devolver_estaciones():
     conexion = obtener_conexion()
     creador = conexion.cursor()
-    creador.execute("SELECT id_estacion, ubicacion, estado FROM WATERING_STATIONS")
+    creador.execute("SELECT id_estacion, ubicacion, estado, caudal, volumen, operario FROM WATERING_STATIONS")
     estaciones = creador.fetchall()
+    
     conexion.close()
     return estaciones
 
