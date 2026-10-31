@@ -2,8 +2,13 @@ import socket
 import sys
 import time
 import threading
+from WM_WateringStation.Monitor.ui import MonitorGUI
 
 FORMAT = 'utf-8'
+
+gui = None
+fuera_servicio = threading.Event()
+estado_engine_actual = "DESCONECTADA"
 
 """SOCKETS"""
 
@@ -25,7 +30,8 @@ def escuchar_central(cliente, id_estacion):
         try:
             msg = recibir_msg(cliente)
             if not msg:
-                print ("[MONITOR] Conexion cerrada por la central")
+                log ("[MONITOR] Conexion cerrada por la central")
+                gui.publicar_estado("DESCONECTADO")
                 break
 
             for linea in msg.split("\n"):
@@ -37,17 +43,28 @@ def escuchar_central(cliente, id_estacion):
                 orden = partes[0]    
 
                 if orden == "OUT_OF_ORDER":
-                    print(f"[MONITOR] Orden recibida de central: Estacion fuera de servicio.") #Naranja
+                    fuera_servicio.set()
+                    log(f"[MONITOR] Orden recibida de central: Estacion fuera de servicio.") #Naranja
+                    gui.publicar_estado("OUT_OF_ORDER")
                     send(cliente, f"ORDEN_OoO_RECIBIDO#{id_estacion}")
 
                 elif orden == "ACTIVACION":
-                    print(f"[MONITOR] Orden recibida de central: Estacion activada.") #Verde
+                    fuera_servicio.clear()
+                    log(f"[MONITOR] Orden recibida de central: Estacion activada.") #Verde
+                    if estado_engine_actual == "OK":
+                        gui.publicar_componentes("OK", "OK")
+                        gui.publicar_estado("DISPONIBLE")
+                    else:
+                        gui.publicar_componentes("OK", "KO")
+                        gui.publicar_estado("AVERIADO")
+                    
                     send(cliente, f"ORDEN_ACTIVACION_RECIBIDA#{id_estacion}")
 
                 elif orden in ["AVISO_FUGA_RECIBIDO", "FUGA_RESUELTA_CONFIRMACION"]:
-                    print(f"[MONITOR] Confirmacion: {linea}")
+                    log(f"[MONITOR] Confirmacion: {linea}")
         except (ConnectionError, OSError) as error:
-            print(f"[MONITOR] Conexion con Central perdida: {error}")
+            log(f"[MONITOR] Conexion con Central perdida: {error}")
+            gui.publicar_estado("DESCONECTADO")
             break
 
 #funcion para preguntar al engine cada segundo
@@ -62,7 +79,7 @@ def comprobar_engine(ip_engine, puerto_engine, id_estacion, socket_engine):
                 nuevo_socket.connect((ip_engine, puerto_engine))
             except (socket.timeout, ConnectionRefusedError, OSError):
                 nuevo_socket.close()
-                print(
+                log(
                     f"[MONITOR][DESCONECTADA] No se puede conectar "
                     f"al Engine de {id_estacion}.", flush=True
                 )
@@ -73,14 +90,14 @@ def comprobar_engine(ip_engine, puerto_engine, id_estacion, socket_engine):
 
             if respuesta != f"CONEXION_OK#{id_estacion}":
                 nuevo_socket.close()
-                print(
+                log(
                     f"[MONITOR][DESCONECTADA] Resupuesta de conexión "
                     f"inválida: {respuesta}", flush=True
                 )
                 return "DESCONECTADA", None
 
             socket_engine = nuevo_socket
-            print(f"[MONITOR][OK] Conectado al Engine de {id_estacion}.", flush=True)
+            log(f"[MONITOR][OK] Conectado al Engine de {id_estacion}.", flush=True)
 
         #comprobar que el engine sigue vivo con tiempo
         send(socket_engine, f"COMPROBACION_ESTADO_WS#{id_estacion}")
@@ -89,10 +106,10 @@ def comprobar_engine(ip_engine, puerto_engine, id_estacion, socket_engine):
         if respuesta == f"ESTADO_OK#{id_estacion}":
             return "OK", socket_engine
         elif respuesta == f"KO#{id_estacion}":
-            print(f"[MONITOR][FUGA] Engine de {id_estacion} responde KO.", flush=True)
+            log(f"[MONITOR][FUGA] Engine de {id_estacion} responde KO.", flush=True)
             return "FUGA", socket_engine
 
-        print(
+        log(
             f"[MONITOR][DESCONECTADA] Respuesta inesperada: "
             f"{respuesta}", flush=True
         )
@@ -100,14 +117,23 @@ def comprobar_engine(ip_engine, puerto_engine, id_estacion, socket_engine):
         return "DESCONECTADA", None
 
     except (socket.timeout, ConnectionRefusedError, OSError) as error:
-        print(
+        log(
             f"[MONITOR][DESCONECTADA] Error comunicado con {id_estacion}: {error}", flush=True
         )
         if socket_engine is not None:
             socket_engine.close()
         return "DESCONECTADA", None    
 
-def main():
+def log(*args, **kwargs):
+    print(*args, **kwargs)
+
+    mensaje = " ".join(str(arg) for arg in args)
+
+    if gui is not None:
+        gui.publicar_mensaje(mensaje)
+
+def ejecutar_monitor():
+    global estado_engine_actual
 
     if len(sys.argv) == 7:
         SERVER_CENTRAL = sys.argv[1]
@@ -125,7 +151,7 @@ def main():
             #creamos el socket
             cliente = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             cliente.connect(ADDR_CENTRAL)#establecer conexion
-            print (f"Establecida conexión en [{ADDR_CENTRAL}]")
+            log (f"Establecida conexión en [{ADDR_CENTRAL}]")
 
             mensaje = f"REGISTRO#{ID_Estacion}#{Ubicacion}"
             send(cliente, mensaje)
@@ -133,25 +159,25 @@ def main():
             respuesta = recibir_msg(cliente)
 
             if respuesta == f"REGISTRO_OK#{ID_Estacion}":
-                print(f"[MONITOR] Estación {ID_Estacion} registrada correctamente.")
+                log(f"[MONITOR] Estación {ID_Estacion} registrada correctamente.")
 
             elif respuesta == f"REGISTRO_EXISTENTE#{ID_Estacion}":
-                print(f"[MONITOR] Estación {ID_Estacion} ya registrada. Reconectando...")
+                log(f"[MONITOR] Estación {ID_Estacion} ya registrada. Reconectando...")
 
             else:
-                print(f"[MONITOR] Registro denegado: {respuesta}")
+                log(f"[MONITOR] Registro denegado: {respuesta}")
                 cliente.close()#cerrar
                 sys.exit(1)
 
             #enviar la conexion
             msg = f"CONEXION#{ID_Estacion}"
-            print("Envio al servidor: ", msg)
+            log("Envio al servidor: ", msg)
             send(cliente, msg)
             respuesta_conexion = recibir_msg(cliente).strip()
-            print(f"Recibido: {respuesta_conexion}")
+            log(f"Recibido: {respuesta_conexion}")
 
             if respuesta_conexion != f"CONEXION_OK#{ID_Estacion}":
-                print("Conexion denegada")
+                log("Conexion denegada")
                 cliente.close()
                 sys.exit(1)
 
@@ -164,48 +190,83 @@ def main():
             while True:
                 estado_engine, socket_engine = comprobar_engine(SERVER_ENGINE, PORT_ENGINE, ID_Estacion, socket_engine)
 
+                estado_engine_actual = estado_engine
+
                 if estado_engine == "FUGA":
                     if incidencia != "FUGA":
                         incidencia = "FUGA"
-                        print(
+                        log(
                             f"[MONITOR][FUGA] Fuga detectada en "
                             f"{ID_Estacion}. Avusando a Central.", flush=True
                         )
                         send(cliente, f"AVISO_FUGA#{ID_Estacion}")
+                        gui.publicar_componentes("OK", "KO")
+
+                        if not fuera_servicio.is_set():
+                            gui.publicar_estado("AVERIADO")
+
+
                 elif estado_engine == "DESCONECTADA":
                     if incidencia != "AVERIADA":
                         incidencia = "AVERIADA"
-                        print(
+                        log(
                             f"[MONITOR][AVERIADA] Engine de "
                             f"{ID_Estacion} averiado. Avisando a Central.", flush=True
                         )
                         send(cliente, f"AVISO_AVERIA#{ID_Estacion}")
+
+                        gui.publicar_componentes("OK", "KO")
+
+                        if not fuera_servicio.is_set():
+                            gui.publicar_estado("AVERIADO")
+                    
                 elif estado_engine == "OK":
                     if incidencia == "FUGA":
-                        print(
+                        log(
                             f"[MONITOR] Fuga resuelta en {ID_Estacion}.",
                             flush=True
                         )
                         send(cliente, f"FUGA_RESUELTA#{ID_Estacion}")
 
                     elif incidencia == "AVERIADA":
-                        print(
+                        log(
                             f"[MONITOR] Engine recuperado en {ID_Estacion}.",
                             flush=True
                         )
                         send(cliente, f"AVERIA_RESUELTA#{ID_Estacion}")
+                    
+                    gui.publicar_componentes("OK", "OK")
 
+                    if not fuera_servicio.is_set():
+                        gui.publicar_estado("DISPONIBLE")
                     incidencia = None
 
                 time.sleep(1)
 
         except ConnectionRefusedError:
-            print(f"Conexion rexhazada")
+            log(f"Conexion rexhazada")
         except KeyboardInterrupt:
-            print("\nCerrando Monitor")
+            log("\nCerrando Monitor")
             cliente.close()
     else:
-        print("argumentos equivocados, necesito: Ip_central, puerto_central, ip_engine, puerto_engine, id_estacion, ubicacion")
+        log("argumentos equivocados, necesito: Ip_central, puerto_central, ip_engine, puerto_engine, id_estacion, ubicacion")
+
+def main():
+    global gui
+
+    gui = MonitorGUI(
+        sys.argv[5],
+        sys.argv[6]
+    )
+
+    hilo_monitor = threading.Thread(
+        target=ejecutar_monitor,
+        daemon=True
+    )
+
+    hilo_monitor.start()
+
+    gui.ejecutar()
 
 if __name__ == "__main__":
     main()
