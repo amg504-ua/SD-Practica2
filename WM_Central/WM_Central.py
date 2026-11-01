@@ -1,6 +1,7 @@
 import socket
 import threading
 import BD
+import uuid
 
 #sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -12,6 +13,14 @@ from Common.config import load_central_config
 HEADER = 64
 FORMAT = 'utf-8'
 clientes_conectados = {}
+
+def buscar_estacion(id_estacion):
+    #devuelve la fila de la base de datos o None si no existe
+    return next((e for e in BD.devolver_estaciones() if e[0] == id_estacion), None)
+
+def ubicacion_de(id_estacion):
+    estacion = buscar_estacion(id_estacion)
+    return estacion[1] if estacion else "N/D"
 
 def recibir_exacto(conn, cantidad):
     """Recibe exactamente la cantidad de bytes solicitada."""
@@ -162,52 +171,65 @@ def handle_client(conn, addr, productor_kafka):
                     #orden de la cnetral para bloquear una estacion
                     elif tipo == "CENTRAL_BLOQUEA" and len(partes) == 2:
                         id_estacion = partes[1]
-                        if id_estacion in clientes_conectados:
-                            clientes_conectados[id_estacion].send(("OUT_OF_ORDER\n").encode(FORMAT))
-                            BD.modificar_estados(id_estacion, "FUERA DE SERVICIO")
-                            print(f"OUT_OF_ORDER ENVIADO A {id_estacion}", flush=True)
-                            estaciones = BD.devolver_estaciones()
-                            ubicacion = "N/D"
-                            for e in estaciones:
-                                if e[0] == id_estacion:
-                                    ubicacion = e[1]
-                                    break
-                            
-                            enviar_estado_fo(productor_kafka, id_estacion, "FUERA DE SERVICIO", ubicacion)
-                        respuesta = f"OK#Bloquea {id_estacion}"
+                        if id_estacion not in clientes_conectados:
+                            respuesta = f"ERROR#Estacion {id_estacion} no conectada"
+                        else:
+                            try:
+                                clientes_conectados[id_estacion].send(("OUT_OF_ORDER\n").encode(FORMAT))
+                            except OSError as error:
+                                respuesta = f"ERROR#No se pudo contactar con {id_estacion}: {error}"
+                            else:
+                                BD.modificar_estados(id_estacion, "FUERA DE SERVICIO")
+                                print(f"OUT_OF_ORDER ENVIADO A {id_estacion}", flush=True)
+                                enviar_estado_fo(productor_kafka, id_estacion, "FUERA DE SERVICIO",
+                                                 ubicacion_de(id_estacion))
+                                respuesta = f"OK#Bloquea {id_estacion}"
                     
                     #orden de la central para activar una estacion
                     elif tipo == "CENTRAL_ACTIVA" and len(partes) == 2:
                         id_estacion = partes[1]
-                        if id_estacion in clientes_conectados:
-                            clientes_conectados[id_estacion].send(("ACTIVACION\n").encode(FORMAT))
-                            BD.modificar_estados(id_estacion, "DISPONIBLE")
-                            print(f"ACTIVACION ENVIADO A {id_estacion}", flush=True)
-                            estaciones = BD.devolver_estaciones()
-                            ubicacion = "N/D"
-                            for e in estaciones:
-                                if e[0] == id_estacion:
-                                    ubicacion = e[1]
-                                    break
-                                                    
-                            enviar_estado_fo(productor_kafka, id_estacion, "FUERA DE SERVICIO", ubicacion)
+                        estacion = buscar_estacion(id_estacion)
+ 
+                        if id_estacion not in clientes_conectados:
+                            respuesta = f"ERROR#Estacion {id_estacion} no conectada"
+                        elif estacion is not None and str(estacion[2]).upper() in ("FUGA", "AVERIADA"):
+                            # activarla pondria VERDE una estacion que sigue rota
+                            respuesta = f"ERROR#Estacion {id_estacion} con averia sin resolver ({estacion[2]})"
+                        else:
+                            try:
+                                clientes_conectados[id_estacion].send(("ACTIVACION\n").encode(FORMAT))
+                            except OSError as error:
+                                respuesta = f"ERROR#No se pudo contactar con {id_estacion}: {error}"
+                            else:
+                                BD.modificar_estados(id_estacion, "DISPONIBLE")
+                                print(f"ACTIVACION ENVIADO A {id_estacion}", flush=True)
+                                enviar_estado_fo(productor_kafka, id_estacion, "DISPONIBLE",
+                                                 ubicacion_de(id_estacion))
+                                respuesta = f"OK#ACTIVANDO {id_estacion}"
 
-                        respuesta = f"OK#ACTIVANDO {id_estacion}"
 
                     #orden de la central pra regar una estacion
                     elif tipo == "CENTRAL_RIEGA" and len(partes) == 3:
                         id_estacion = partes[1]
                         tiempo = partes[2]
 
-                        solicitud = {
-                            "id_peticion": f"ORDEN-CENTRAL-{id_estacion}",
-                            "id_operario": "CENTRAL",
-                            "id_estacion": id_estacion,
-                            "tiempo_riego": int(tiempo)
-                        }
-                        enviar_orden_engine(productor_kafka, solicitud)
-                        print(f"ORDEN DE RIEGO ENVIADA A {id_estacion}", flush=True)
-                        respuesta = f"OK#Riego iniciado en {id_estacion}"
+                        id_peticion = f"ORDEN-CENTRAL-{id_estacion}-{uuid.uuid4().hex[:8]}"
+ 
+                        # Mismas comprobaciones que para un operario: estacion registrada,
+                        # DISPONIBLE (sin fuga ni riego en curso), duracion valida...
+                        valida, motivo, solicitud = validar_solicitud_riego(
+                            f"{id_peticion}#SOLICITUD_RIEGO#CENTRAL#{id_estacion}#{tiempo}"
+                        )
+ 
+                        if not valida:
+                            print(f"[ORDEN CENTRAL DENEGADA] {motivo}", flush=True)
+                            respuesta = f"ERROR#{motivo}"
+                        elif enviar_orden_engine(productor_kafka, solicitud):
+                            print(f"ORDEN DE RIEGO ENVIADA A {id_estacion}", flush=True)
+                            respuesta = f"OK#Riego iniciado en {id_estacion}"
+                        else:
+                            respuesta = "ERROR#No se pudo enviar la orden (Kafka)"
+
 
                     elif tipo == "ORDEN_ACTIVACION_RECIBIDA": 
                         print(f"Estacion activada: {id_estacion}")
@@ -227,21 +249,23 @@ def handle_client(conn, addr, productor_kafka):
 
         except (ConnectionError, OSError) as exc:
             print(f"[ERROR DE CONEXIÓN] {addr}: {exc}", flush=True)
+            connected = False
 
     if id_estacionA is not None:
-        if id_estacionA in clientes_conectados:
+        actual = clientes_conectados.get(id_estacionA)
+ 
+        if actual is None or actual is conn:
             #limpiar el diccionario de los sockets desconectados
-            del clientes_conectados[id_estacionA]
-        BD.modificar_estados(id_estacionA, "DESCONECTADA")
-        estaciones = BD.devolver_estaciones()
-        ubicacion = next(
-            (e[1] for e in estaciones if e[0] == id_estacion),"N/D"
-        )
+            clientes_conectados.pop(id_estacionA, None)
+            # al desconectarse se pierde el riego en curso: datos de riego a cero...
+            BD.finalizar_riego(id_estacionA)
+            #la estacion pasa a DESCONECTADA
+            BD.modificar_estados(id_estacionA, "DESCONECTADA")
         enviar_estado_fo(
             productor_kafka,
             id_estacionA,
             "DESCONECTADA",
-            ubicacion
+            ubicacion_de(id_estacionA)
         )
         print(f"[ESTACIÓN] {id_estacionA} pasa a DESCONECTADA.", flush=True)
 
@@ -508,6 +532,30 @@ def validar_solicitud_riego(mensaje):
 peticiones_finalizadas = set()
 bloqueo_peticiones = threading.Lock()
 
+def registrar_riego(productor, campos):
+    #guardar el caudal, el volumen y el operario que ha ordenado el riego
+    id_operario, id_estacion = campos[2], campos[3]
+
+    try:
+        caudal = float(campos[4])
+        volumen = float(campos[5])
+    except ValueError:
+        print(f"[ENGINE] Caudal o volumen no numerico: {campos}", flush=True)
+        return   
+
+    anterior = BD.actualizar_datos(id_estacion, caudal, volumen, id_operario)
+
+    if anterior == "DISPONIBLE":
+        print(f"[ESTACIÓN] {id_estacion} pasa a REGANDO (operario {id_operario}).", flush=True)
+        enviar_estado_fo(productor, id_estacion, "REGANDO", ubicacion_de(id_estacion),
+                         caudal, volumen, id_operario)
+
+def cerrar_riego(productor, id_estacion):
+    if BD.finalizar_riego(id_estacion):
+        print(f"[ESTACIÓN] {id_estacion} vuelve a DISPONIBLE.", flush=True)
+        enviar_estado_fo(productor, id_estacion, "DISPONIBLE", ubicacion_de(id_estacion))    
+
+
 def escuchar_eventos_engine(consumidor, productor, detener):
     print("[KAFKA] Escuchando eventos del Engine...", flush=True)
 
@@ -562,6 +610,13 @@ def escuchar_eventos_engine(consumidor, productor, detener):
                             peticiones_finalizadas.add(id_peticion)
 
                     print(f"[ENGINE] Evento recibido: {contenido}", flush=True)
+                    
+                    if tipo == "DATOS_RIEGO":
+                        registrar_riego(productor, campos)
+                    else:
+                        cerrar_riego(productor, campos[3])
+
+                        
                     enviar_evento_fo(productor, contenido)
     
     finally: 
@@ -585,6 +640,7 @@ def central():
     productor = None
     hilo_kafka = None
     hilo_sockets = None
+    hilo_kafka_engine = None
     
     """BASE DE DATOS"""
 
@@ -607,7 +663,7 @@ def central():
         productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
 
         for estacion in BD.devolver_estaciones():
-            id_estacion, ubicacion, estado = estacion
+            id_estacion, ubicacion, estado = estacion[:3]
             enviar_estado_fo(productor, id_estacion, estado, ubicacion)            
 
         print("[CENTRAL] Conexiones Kafka creadas.")
