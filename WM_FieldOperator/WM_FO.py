@@ -1,6 +1,7 @@
 import argparse
 import threading
 import uuid
+import time
 from Common.config import load_field_operator_config
 from kafka import KafkaConsumer, KafkaProducer
 
@@ -14,10 +15,16 @@ bloqueo_solicitud = threading.Lock()
 def crear_consumidor_kafka(id_operador, ip, puerto_kafka, topic):
     """Crea un consumidor kafka para recibir eventos del sistema"""
 
+    group_id = (
+        f"wm-fo-{id_operador}-{topic}-{uuid.uuid4().hex}"
+        if topic == "ce.eventos.fo"
+        else f"wm-fo-{id_operador}-{topic}"
+    )
+
     consumidor = KafkaConsumer(
         topic,
         bootstrap_servers=f"{ip}:{puerto_kafka}", #Indica donde está el broker Kafka
-        group_id=f"wm-fo-{id_operador}-{topic}", #Identifica el grupo de consumidores
+        group_id=group_id, #Identifica el grupo de consumidores
         auto_offset_reset="latest", #Si el grupo no tiene un offset guardado, empieza a leer los mensajes nuevos; no recupera los anteriores
         value_deserializer=lambda mensaje: mensaje.decode("utf-8"), #Convierte el mensaje, que llega como bytes, a texto
         #Este parámetro indica cómo transformar el valor de cada mensaje recibido
@@ -44,7 +51,7 @@ def escuchar_mensajes(consumidores):
     except KeyboardInterrupt:
         print("\nInterrupción solicitada por el usuario.")
 
-def escuchar_eventos(consumidor, detener, id_operador):    
+def escuchar_eventos(consumidor, detener, id_operador, productor):    
     """Interpreta los eventos recibidos desde WM_Central"""
 
     formatos = {
@@ -121,6 +128,8 @@ def escuchar_eventos(consumidor, detener, id_operador):
                             f"litros suministrados: {litros} L."
                             f"Petición: {id_peticion}"
                         )
+                        enviar_ack_resumen(productor, id_peticion, id_operador)
+                        mostrar_estaciones()
 
                     elif tipo_evento == "RIEGO_INTERRUMPIDO":
                         motivo = campos[4]
@@ -145,6 +154,31 @@ def crear_productor_kafka(ip, puerto_kafka):
     )
 
     return productor
+
+def enviar_ack_resumen(productor, id_peticion, id_operador):
+    """Confirma a Central la recepción de un resumen de riego."""
+
+    mensaje = (
+        f"{id_peticion}#RESUMEN_RECIBIDO#{id_operador}"
+    )
+
+    try:
+        resultado = productor.send(
+            "fo.confirmaciones.ce",
+            value=mensaje
+        ).get(timeout=10)
+
+        print(
+            f"[ACK] Confirmación enviada a Central: {mensaje} "
+            f"(Topic: {resultado.topic})",
+            flush=True
+        )
+
+    except Exception as error:
+        print(
+            f"[ACK] Error enviando la confirmación: {error}",
+            flush=True
+        )
 
 def enviar_solicitud_riego(productor, id_operador, id_estacion, tiempo_riego):
     """Envía una solicitud de riego a WM_Central"""
@@ -172,6 +206,18 @@ def enviar_solicitud_riego(productor, id_operador, id_estacion, tiempo_riego):
     except Exception as error:
         print(f"Error al enviar la solicitud: {error}")
         return None
+
+def enviar_aviso_nuevo_fo(productor, id_operador):
+    """Notifica a Central que un nuevo FO se ha conectado."""
+
+    mensaje = f"NUEVO_FO_CONECTADO#{id_operador}"
+
+    try:
+        resultado = productor.send("fo.estados.ce", value=mensaje).get(timeout=10)
+        print(f"[FO] Aviso de conexión enviado a Central. (Topic: {resultado.topic})")
+
+    except Exception as error:
+        print(f"[FO] Error al notificar conexión a Central: {error}")
 
 def solicitar_riego():
     """Recoge y valida el tiempo introducido por el operario."""
@@ -220,11 +266,13 @@ def actualizar_estacion(id_estacion, estado, ubicacion, caudal, volumen_acumulad
             "volumen_acumulado": volumen_acumulado,
         }
 
-def escuchar_estados(consumidor, detener):
+def escuchar_estados(consumidor, detener, id_operador):
     """Recibe estados y actualiza las estaciones continuamente."""
 
     try:
         while not detener.is_set():
+            actualizadas = False
+            
             mensajes = consumidor.poll(timeout_ms=500)
 
             for registros in mensajes.values():
@@ -238,6 +286,9 @@ def escuchar_estados(consumidor, detener):
                     (id_estacion, estado, ubicacion, caudal,
                      volumen, id_operario) = campos
 
+                    if id_operario not in ("-", str(id_operador)):
+                        continue
+
                     try:
                         caudal = None if caudal == "-" else float(caudal)
                         volumen = None if volumen == "-" else float(volumen)
@@ -246,8 +297,9 @@ def escuchar_estados(consumidor, detener):
                         continue
 
                     actualizar_estacion(id_estacion,estado,ubicacion,caudal,volumen)
-
-                    mostrar_estaciones()
+                    actualizadas = True
+            if actualizadas:
+                mostrar_estaciones()
 
     finally:
         consumidor.close()
@@ -344,10 +396,18 @@ def main(id_operador, ip, puerto_kafka):
 
         print("Conexiones Kafka creadas correctamente.")
 
-        # Creamos los hilos que escucharán los topics.
-        hilo_eventos = threading.Thread(target=escuchar_eventos,args=(consumidor_eventos, detener, id_operador),name="hilo-eventos")
+        limite = time.monotonic() + 15
 
-        hilo_estados = threading.Thread(target=escuchar_estados,args=(consumidor_estados, detener),name="hilo-estados")
+        while not consumidor_eventos.assignment():
+            consumidor_eventos.poll(timeout_ms=500)
+
+            if time.monotonic() >= limite:
+                raise TimeoutError("Kafka no ha asignado particiones al consumidor de eventos.")
+
+        # Creamos los hilos que escucharán los topics.
+        hilo_eventos = threading.Thread(target=escuchar_eventos,args=(consumidor_eventos, detener, id_operador, productor),name="hilo-eventos")
+
+        hilo_estados = threading.Thread(target=escuchar_estados,args=(consumidor_estados, detener, id_operador),name="hilo-estados")
 
         hilos.extend([hilo_eventos, hilo_estados])
 
@@ -355,7 +415,7 @@ def main(id_operador, ip, puerto_kafka):
         for hilo in hilos:
             hilo.start()
 
-        mostrar_estaciones() 
+        enviar_aviso_nuevo_fo(productor, id_operador) 
 
         print("\nEscribe 'r' para solicitar un riego o 'salir' para terminar.")
 
