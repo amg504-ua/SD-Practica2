@@ -128,6 +128,118 @@ def comprobar_engine(ip_engine, puerto_engine, id_estacion, socket_engine):
             socket_engine.close()
         return "DESCONECTADA", None    
 
+def conectar_central(ip, puerto, id_estacion, ubicacion):
+    """Intenta conectar y registrar el Monitor en Central."""
+
+    while True:
+        cliente = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        cliente.settimeout(5)
+
+        try:
+            cliente.connect((ip, puerto))
+
+            log(f"[MONITOR] Conectado a Central en {ip}:{puerto}")
+
+            # Registrar la estación.
+            send(cliente, f"REGISTRO#{id_estacion}#{ubicacion}")
+            respuesta = recibir_msg(cliente)
+
+            if respuesta not in [
+                f"REGISTRO_OK#{id_estacion}",
+                f"REGISTRO_EXISTENTE#{id_estacion}"
+            ]:
+                raise ConnectionError(
+                    f"Registro rechazado: {respuesta}"
+                )
+
+            log(f"[MONITOR] Estación {id_estacion} registrada.")
+
+            # Autenticar la conexión.
+            send(cliente, f"CONEXION#{id_estacion}")
+            respuesta = recibir_msg(cliente)
+
+            if respuesta != f"CONEXION_OK#{id_estacion}":
+                raise ConnectionError(
+                    f"Autenticación rechazada: {respuesta}"
+                )
+
+            log("[MONITOR] Autenticación con Central completada.")
+
+            # Restaurar el modo bloqueante para escuchar mensajes.
+            cliente.settimeout(None)
+
+            return cliente
+
+        except (ConnectionError, OSError, socket.timeout) as error:
+            log(
+                f"[MONITOR][CENTRAL DESCONECTADA] "
+                f"No se puede conectar con Central: {error}"
+            )
+
+            cliente.close()
+            time.sleep(3)
+
+def supervisar_engine(ip_engine, puerto_engine, id_estacion, detener):
+    """Supervisa el Engine independientemente de la conexión con Central."""
+    global estado_engine_actual
+
+    socket_engine = None
+    incidencia = None
+
+    while not detener.is_set():
+        estado_engine, socket_engine = comprobar_engine(
+            ip_engine,
+            puerto_engine,
+            id_estacion,
+            socket_engine
+        )
+
+        estado_engine_actual = estado_engine
+
+        if estado_engine == "FUGA":
+            if incidencia != "FUGA":
+                incidencia = "FUGA"
+                log(
+                    f"[MONITOR][FUGA] Fuga detectada en {id_estacion}."
+                )
+
+            gui.publicar_componentes("OK", "KO")
+
+            if not fuera_servicio.is_set():
+                gui.publicar_estado("AVERIADO")
+
+        elif estado_engine == "DESCONECTADA":
+            if incidencia != "AVERIADA":
+                incidencia = "AVERIADA"
+                log(
+                    f"[MONITOR][AVERIADA] Engine de {id_estacion} "
+                    "no disponible."
+                )
+
+            gui.publicar_componentes("OK", "KO")
+
+            if not fuera_servicio.is_set():
+                gui.publicar_estado("AVERIADO")
+
+        elif estado_engine == "OK":
+            if incidencia == "FUGA":
+                log(f"[MONITOR] Fuga resuelta en {id_estacion}.")
+
+            elif incidencia == "AVERIADA":
+                log(f"[MONITOR] Engine recuperado en {id_estacion}.")
+
+            gui.publicar_componentes("OK", "OK")
+
+            if not fuera_servicio.is_set():
+                gui.publicar_estado("DISPONIBLE")
+
+            incidencia = None
+
+        detener.wait(1)
+
+    if socket_engine is not None:
+        socket_engine.close()
+
 def log(*args, **kwargs):
     print(*args, **kwargs)
 
@@ -136,124 +248,80 @@ def log(*args, **kwargs):
     if gui is not None:
         gui.publicar_mensaje(mensaje)
 
+
 def ejecutar_monitor():
     global estado_engine_actual
 
-    if len(sys.argv) == 7:
-        SERVER_CENTRAL = sys.argv[1]
-        PORT_CENTRAL = int(sys.argv[2])
-        ADDR_CENTRAL = (SERVER_CENTRAL, PORT_CENTRAL)
+    if len(sys.argv) != 7:
+        log(
+            "Argumentos equivocados. Necesito: "
+            "ip_central, puerto_central, ip_engine, "
+            "puerto_engine, id_estacion, ubicacion"
+        )
+        return
 
-        SERVER_ENGINE = sys.argv[3]
-        PORT_ENGINE = int(sys.argv[4])
+    SERVER_CENTRAL = sys.argv[1]
+    PORT_CENTRAL = int(sys.argv[2])
 
-        ID_Estacion = sys.argv[5]
-        Ubicacion = sys.argv[6]
+    SERVER_ENGINE = sys.argv[3]
+    PORT_ENGINE = int(sys.argv[4])
 
-        try:
+    ID_Estacion = sys.argv[5]
+    Ubicacion = sys.argv[6]
 
-            #creamos el socket
-            cliente = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            cliente.connect(ADDR_CENTRAL)#establecer conexion
-            log (f"Establecida conexión en [{ADDR_CENTRAL}]")
+    cliente = None
+    detener = threading.Event()
 
-            mensaje = f"REGISTRO#{ID_Estacion}#{Ubicacion}"
-            send(cliente, mensaje)
+    # El Engine se supervisa independientemente de Central.
+    hilo_engine = threading.Thread(
+        target=supervisar_engine,
+        args=(
+            SERVER_ENGINE,
+            PORT_ENGINE,
+            ID_Estacion,
+            detener
+        ),
+        name="hilo-engine",
+        daemon=True
+    )
 
-            respuesta = recibir_msg(cliente)
+    try:
+        hilo_engine.start()
 
-            if respuesta == f"REGISTRO_OK#{ID_Estacion}":
-                log(f"[MONITOR] Estación {ID_Estacion} registrada correctamente.")
+        # La conexión con Central puede tardar.
+        # El hilo del Engine sigue funcionando mientras tanto.
+        cliente = conectar_central(
+            SERVER_CENTRAL,
+            PORT_CENTRAL,
+            ID_Estacion,
+            Ubicacion
+        )
 
-            elif respuesta == f"REGISTRO_EXISTENTE#{ID_Estacion}":
-                log(f"[MONITOR] Estación {ID_Estacion} ya registrada. Reconectando...")
+        hilo_central = threading.Thread(
+            target=escuchar_central,
+            args=(cliente, ID_Estacion),
+            daemon=True
+        )
 
-            else:
-                log(f"[MONITOR] Registro denegado: {respuesta}")
-                cliente.close()#cerrar
-                sys.exit(1)
+        hilo_central.start()
 
-            #enviar la conexion
-            msg = f"CONEXION#{ID_Estacion}"
-            log("Envio al servidor: ", msg)
-            send(cliente, msg)
-            respuesta_conexion = recibir_msg(cliente).strip()
-            log(f"Recibido: {respuesta_conexion}")
+        while not detener.is_set():
+            time.sleep(0.5)
 
-            if respuesta_conexion != f"CONEXION_OK#{ID_Estacion}":
-                log("Conexion denegada")
-                cliente.close()
-                sys.exit(1)
+    except KeyboardInterrupt:
+        log("\nCerrando Monitor.")
 
-            hilo_central = threading.Thread(target= escuchar_central, args=(cliente, ID_Estacion), daemon=True)
-            hilo_central.start()
+    except Exception as error:
+        log(f"[MONITOR] Error inesperado: {error}")
 
-            socket_engine = None
-            incidencia = False
+    finally:
+        detener.set()
 
-            while True:
-                estado_engine, socket_engine = comprobar_engine(SERVER_ENGINE, PORT_ENGINE, ID_Estacion, socket_engine)
+        if hilo_engine.is_alive():
+            hilo_engine.join(timeout=3)
 
-                estado_engine_actual = estado_engine
-
-                if estado_engine == "FUGA":
-                    if incidencia != "FUGA":
-                        incidencia = "FUGA"
-                        log(
-                            f"[MONITOR][FUGA] Fuga detectada en "
-                            f"{ID_Estacion}. Avusando a Central.", flush=True
-                        )
-                        send(cliente, f"AVISO_FUGA#{ID_Estacion}")
-                        gui.publicar_componentes("OK", "KO")
-
-                        if not fuera_servicio.is_set():
-                            gui.publicar_estado("AVERIADO")
-
-
-                elif estado_engine == "DESCONECTADA":
-                    if incidencia != "AVERIADA":
-                        incidencia = "AVERIADA"
-                        log(
-                            f"[MONITOR][AVERIADA] Engine de "
-                            f"{ID_Estacion} averiado. Avisando a Central.", flush=True
-                        )
-                        send(cliente, f"AVISO_AVERIA#{ID_Estacion}")
-
-                        gui.publicar_componentes("OK", "KO")
-
-                        if not fuera_servicio.is_set():
-                            gui.publicar_estado("AVERIADO")
-                    
-                elif estado_engine == "OK":
-                    if incidencia == "FUGA":
-                        log(
-                            f"[MONITOR] Fuga resuelta en {ID_Estacion}.",
-                            flush=True
-                        )
-                        send(cliente, f"FUGA_RESUELTA#{ID_Estacion}")
-
-                    elif incidencia == "AVERIADA":
-                        log(
-                            f"[MONITOR] Engine recuperado en {ID_Estacion}.",
-                            flush=True
-                        )
-                        send(cliente, f"AVERIA_RESUELTA#{ID_Estacion}")
-                    
-                    gui.publicar_componentes("OK", "OK")
-
-                    if not fuera_servicio.is_set():
-                        gui.publicar_estado("DISPONIBLE")
-                    incidencia = None
-
-                time.sleep(1)
-
-        except ConnectionRefusedError:
-            log(f"Conexion rexhazada")
-        except KeyboardInterrupt:
-            log("\nCerrando Monitor")
+        if cliente is not None:
             cliente.close()
-    else:
-        log("argumentos equivocados, necesito: Ip_central, puerto_central, ip_engine, puerto_engine, id_estacion, ubicacion")
 
 def main():
     global gui
