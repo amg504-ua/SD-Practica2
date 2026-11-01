@@ -26,9 +26,10 @@ class MonitorGUI:
     def __init__(self, id_estacion, ubicacion):
 
         self.root = tk.Tk()
+        self.root.minsize(400, 300)
         self.root.title(f"Water Management - {id_estacion}")
         self.root.geometry("540x430")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
         self.root.configure(bg="#17212B")
 
         self.id_estacion = id_estacion
@@ -118,6 +119,7 @@ class MonitorGUI:
             bg="#17212B",
             height=105
         )
+        panel_mensajes.pack_propagate(False)
         panel_mensajes.pack(fill="x", side="bottom")
 
         tk.Label(
@@ -137,11 +139,26 @@ class MonitorGUI:
             wraplength=500,
             justify="left"
         )
+        self.panel_mensajes = panel_mensajes
+
+        self.root.bind(
+            "<Configure>",
+            self.ajustar_interfaz
+        )
         self.ultimo_mensaje.pack(
             anchor="w",
             padx=15,
             pady=(0, 10)
         )
+
+    def ajustar_interfaz(self, evento):
+
+        if evento.widget == self.root:
+            ancho = self.root.winfo_width()
+
+            self.ultimo_mensaje.configure(
+                wraplength=max(200, ancho - 40)
+            )
 
     def publicar_estado(self, estado):
         self.eventos.put(("ESTADO", estado))

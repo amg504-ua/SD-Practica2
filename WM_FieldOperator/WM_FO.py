@@ -9,6 +9,9 @@ estaciones = {}
 bloqueo_estaciones = threading.Lock()
 solicitud_activa = None
 bloqueo_solicitud = threading.Lock()
+central_conectada = False
+ultima_señal_central = None
+bloqueo_central = threading.Lock()
 
 #======= CONSUMIDORES =======#
 
@@ -99,6 +102,10 @@ def escuchar_eventos(consumidor, detener, id_operador, productor):
                             f"Petición: {id_peticion}. "
                             f"Estación: {id_estacion}."
                         )
+                        #gui.publicar_actividad(
+                        #    f"RIEGO AUTORIZADO | Estación: {id_estacion} | "
+                        #    f"Petición: {id_peticion}"
+                        #)
                     elif tipo_evento == "RIEGO_DENEGADO":
                         motivo = campos[4]
                         print(
@@ -107,6 +114,10 @@ def escuchar_eventos(consumidor, detener, id_operador, productor):
                             f"Estación: {id_estacion}. "
                             f"Motivo: {motivo}"
                         )
+                        #gui.publicar_actividad(
+                        #    f"RIEGO DENEGADO | Estación: {id_estacion} | "
+                        #    f"Motivo: {motivo}"
+                        #)
 
                     elif tipo_evento == "DATOS_RIEGO":
                         caudal = campos[4]
@@ -117,6 +128,11 @@ def escuchar_eventos(consumidor, detener, id_operador, productor):
                             f"caudal = {caudal} L/min; "
                             f"volumen acumulado = {volumen} L."
                         )
+                        #gui.publicar_actividad(
+                        #    f"RIEGO EN CURSO | Estación: {id_estacion}\n"
+                        #    f"Caudal: {caudal} L/min\n"
+                        #    f"Volumen acumulado: {volumen} L"
+                        #)
 
                     elif tipo_evento == "RESUMEN_RIEGO":
                         tiempo = campos[4]
@@ -128,6 +144,16 @@ def escuchar_eventos(consumidor, detener, id_operador, productor):
                             f"litros suministrados: {litros} L."
                             f"Petición: {id_peticion}"
                         )
+                        #gui.publicar_actividad(
+                        #    f"RIEGO FINALIZADO | Estación: {id_estacion}"
+                        #)
+
+                        #gui.publicar_resumen(
+                        #    f"Estación: {id_estacion}\n\n"
+                        #    f"Petición: {id_peticion}\n\n"
+                        #    f"Duración: {tiempo} segundos\n\n"
+                        #    f"Litros suministrados: {litros} L"
+                        #)
                         enviar_ack_resumen(productor, id_peticion, id_operador)
                         mostrar_estaciones()
 
@@ -139,6 +165,11 @@ def escuchar_eventos(consumidor, detener, id_operador, productor):
                             f"Motivo: {motivo} "
                             f"Petición: {id_peticion}"
                         )
+                        #gui.publicar_actividad(
+                        #    f"RIEGO INTERRUMPIDO | Estación: {id_estacion}\n"
+                        #    f"Motivo: {motivo}\n"
+                        #    f"Petición: {id_peticion}"
+                        #)
 
     finally:
         consumidor.close()
@@ -269,14 +300,51 @@ def actualizar_estacion(id_estacion, estado, ubicacion, caudal, volumen_acumulad
 def escuchar_estados(consumidor, detener, id_operador):
     """Recibe estados y actualiza las estaciones continuamente."""
 
+    global central_conectada, ultima_señal_central
+
     try:
         while not detener.is_set():
             actualizadas = False
             
             mensajes = consumidor.poll(timeout_ms=500)
 
+            # Comprobamos si Central ha dejado de enviar heartbeats.
+            with bloqueo_central:
+                if (
+                    central_conectada
+                    and ultima_senal_central is not None
+                    and time.monotonic() - ultima_senal_central > 6
+                ):
+                    central_conectada = False
+                    print(
+                        "\n[FO] Se ha perdido la conexión con Central. "
+                        "Todas las estaciones quedan temporalmente desconectadas."
+                    )
+                    mostrar_desconexion = True
+                else:
+                    mostrar_desconexion = False
+
+            if mostrar_desconexion:
+                mostrar_estaciones()
+
             for registros in mensajes.values():
                 for mensaje in registros:
+
+                    # Comprobamos si es una señal de vida de Central.
+                    if mensaje.value == "CENTRAL#HEARTBEAT":
+
+                        with bloqueo_central:
+                            estaba_conectada = central_conectada
+                            central_conectada = True
+                            ultima_senal_central = time.monotonic()
+
+                        # Solo mostramos el aviso cuando recuperamos la conexión.
+                        if not estaba_conectada:
+                            print("\n[FO] Conexión con Central restablecida.")
+                            mostrar_estaciones()
+
+                        continue                    
+
                     campos = mensaje.value.split("#")
 
                     if len(campos) != 6:
@@ -320,7 +388,11 @@ def mostrar_estaciones():
     print("\n--- Estaciones de Riego ---")
 
     for id_estacion, datos in copia_estaciones.items():
-        estado = datos.get("estado", "DESCONOCIDO")
+
+        if central_conectada:
+            estado = datos.get("estado", "DESCONOCIDO")
+        else:
+            estado = "DESCONECTADA"
         ubicacion = datos.get("ubicacion", "N/D")
         caudal = datos.get("caudal", "N/D")
         volumen = datos.get("volumen_acumulado", "N/D")
@@ -330,8 +402,18 @@ def mostrar_estaciones():
             f"Caudal: {caudal} | Volumen acumulado: {volumen}"
         )
 
+    #if gui is not None:
+    #    gui.publicar_estaciones(
+    #        copia_estaciones,
+    #        central_conectada
+    #    )
+
 def estacion_disponible(id_estacion):
     """Comprueba si una estación existe y está disponible"""
+
+    with bloqueo_central:
+        if not central_conectada:
+            return False
 
     with bloqueo_estaciones:
         datos = estaciones.get(id_estacion)
@@ -343,6 +425,11 @@ def estacion_disponible(id_estacion):
 
 def seleccionar_estacion():
     """Permite al operario elegir una estación por su identificador."""
+
+    with bloqueo_central:
+        if not central_conectada:
+            print("Central está desconectada. No se pueden solicitar riegos.")
+            return None
 
     if not estaciones:
         print("No hay estaciones disponibles para seleccionar.")
@@ -361,15 +448,12 @@ def seleccionar_estacion():
 
         return id_estacion
 
-#======= INTERFAZ =======#
-
-def cargar_interfaz_grafica():
-    """Interfaz Gráfica del FO"""
-
 #======= MAIN =======#
 
 def main(id_operador, ip, puerto_kafka):
     config = load_field_operator_config()
+
+    detener = threading.Event()
 
     if ip is None:
         ip = config.kafka_host
@@ -380,7 +464,6 @@ def main(id_operador, ip, puerto_kafka):
     print(f"Broker Kafka: {ip}:{puerto_kafka}")
 
     consumidores = []
-    detener = threading.Event()
     hilos = []
     productor = None
 
@@ -431,6 +514,9 @@ def main(id_operador, ip, puerto_kafka):
             else:
                 print("Orden no válida. Utiliza 'r' o 'salir'.")
 
+        #while not detener.wait(0.5):
+        #    pass
+        
     except KeyboardInterrupt:
         print("\nInterrupción solicitada por el usuario.")
 

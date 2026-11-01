@@ -48,8 +48,16 @@ def inicializar():
         if nombre not in columnas:
             creador.execute(f"ALTER TABLE WATERING_STATIONS ADD COLUMN {nombre} {definicion}")
  
-    creador.execute("UPDATE WATERING_STATIONS SET ESTADO = 'DESCONECTADA', caudal = 0.0, volumen = 0.0, operario = '-'")
-
+    creador.execute("""
+    UPDATE WATERING_STATIONS
+        SET ESTADO = 'DESCONECTADA'
+        WHERE ESTADO NOT IN (
+            'FUGA',
+            'AVERIADA',
+            'FUERA DE SERVICIO',
+            'OUT_OF_SERVICE'
+        )
+    """)
         # Crear la tabla de resúmenes pendientes de confirmación
     creador.execute('''
         CREATE TABLE IF NOT EXISTS PENDING_SUMMARIES (
