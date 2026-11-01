@@ -68,7 +68,8 @@ def escuchar_monitor(conn, addr):
                         continue
 
                     if estado == "OK":
-                        send(conn, f"ESTADO_OK#{id_estacion}")
+                        estado_riego = engine_db.obtener_estado_riego(id_estacion)
+                        send(conn, f"ESTADO_OK#{id_estacion}#{estado_riego}")
                     else:
                         send(conn, f"KO#{id_estacion}")
                 

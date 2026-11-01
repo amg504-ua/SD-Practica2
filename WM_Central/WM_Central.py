@@ -13,6 +13,13 @@ from Common.config import load_central_config
 HEADER = 64
 FORMAT = 'utf-8'
 clientes_conectados = {}
+# Control de sincronización de estados tras recuperar Central.
+estaciones_pendientes = set()
+estaciones_reconciliadas = set()
+
+bloqueo_sincronizacion = threading.Lock()
+
+sincronizacion_completa = threading.Event()
 
 def buscar_estacion(id_estacion):
     #devuelve la fila de la base de datos o None si no existe
@@ -21,6 +28,24 @@ def buscar_estacion(id_estacion):
 def ubicacion_de(id_estacion):
     estacion = buscar_estacion(id_estacion)
     return estacion[1] if estacion else "N/D"
+
+def esperar_fin_sincronizacion(timeout=10):
+    """
+    Espera a que todas las estaciones se reconcilien.
+    Si alguna no responde, termina la espera al alcanzar el timeout.
+    """
+
+    if not sincronizacion_completa.wait(timeout=timeout):
+        with bloqueo_sincronizacion:
+            pendientes = list(estaciones_pendientes)
+
+        print(
+            f"[CENTRAL] Tiempo de sincronización agotado. "
+            f"Estaciones pendientes: {pendientes}",
+            flush=True
+        )
+
+        sincronizacion_completa.set()
 
 def recibir_exacto(conn, cantidad):
     """Recibe exactamente la cantidad de bytes solicitada."""
@@ -73,21 +98,69 @@ def handle_client(conn, addr, productor_kafka):
                     elif tipo == "CONEXION" and len(partes) == 2:
                         id_estacion = partes[1]
                         id_estacionA = id_estacion
+
                         clientes_conectados[id_estacion] = conn
-                        BD.modificar_estados(id_estacion, "DISPONIBLE")
-                        estaciones = BD.devolver_estaciones()
-                        ubicacion = next(
-                            (e[1] for e in estaciones if e[0] == id_estacion),"N/D"
-                        )
-                        enviar_estado_fo(
-                            productor_kafka,
-                            id_estacion,
-                            "DISPONIBLE",
-                            ubicacion
-                        )
-                        print(f"Estacion disponible: {id_estacion}")
+                        
                         respuesta = f"CONEXION_OK#{id_estacion}"
 
+                    elif tipo == "ESTADO_ACTUAL" and len(partes) == 3:
+                        id_estacion = partes[1]
+                        estado_actual = partes[2]
+
+                        if estado_actual not in ["DISPONIBLE", "REGANDO"]:
+                            respuesta = "ERROR#Estado actual no válido"
+
+                        else:
+                            # 1. Consultamos el estado que Central tenía guardado.
+                            estacion = buscar_estacion(id_estacion)
+
+                            if estacion is None:
+                                respuesta = "ERROR#Estación no registrada"
+
+                            else:
+                                estado_guardado = estacion[2]
+
+                                estados_especiales = [
+                                    "FUGA",
+                                    "AVERIADA",
+                                    "FUERA DE SERVICIO",
+                                    "OUT_OF_SERVICE"
+                                ]
+
+                                # 2. No sobrescribimos una incidencia todavía no resuelta.
+                                if estado_guardado in estados_especiales:
+                                    estado_publicar = estado_guardado
+
+                                else:
+                                    BD.modificar_estados(id_estacion, estado_actual)
+                                    estado_publicar = estado_actual
+
+                                # 3. Publicamos el estado que debe conservar la estación.
+                                ubicacion = ubicacion_de(id_estacion)
+
+                                enviar_estado_fo(
+                                    productor_kafka,
+                                    id_estacion,
+                                    estado_publicar,
+                                    ubicacion
+                                )
+
+                                # 4. Marcamos la estación como reconciliada.
+                                with bloqueo_sincronizacion:
+                                    estaciones_reconciliadas.add(id_estacion)
+                                    estaciones_pendientes.discard(id_estacion)
+
+                                    if not estaciones_pendientes:
+                                        sincronizacion_completa.set()
+
+                                print(
+                                    f"[CENTRAL] Estado de {id_estacion} reconciliado: "
+                                    f"{estado_publicar}",
+                                    flush=True
+                                )
+
+                                respuesta = f"ESTADO_ACTUAL_OK#{id_estacion}"
+                    
                     #el monitor no se puede conectar al engine pq este se ha caido
                     elif tipo == "AVISO_FUGA" and len(partes) == 2:
                         id_estacion = partes[1]
@@ -404,6 +477,23 @@ def enviar_orden_engine(productor, solicitud):
         
         return False
 
+def enviar_heartbeat_central(productor, detener):
+    """Publica periódicamente una señal de vida para los FO."""
+
+    while not detener.is_set():
+        try:
+            resultado = productor.send(
+                "ce.estados.fo",
+                value="CENTRAL#HEARTBEAT"
+            ).get(timeout=10)
+
+            print(f"[HEARTBEAT] Señal enviada a los FO (Topic: {resultado.topic})", flush=True)
+
+        except Exception as error:
+            print(f"[HEARTBEAT] Error enviando señal: {error}", flush=True)
+
+        detener.wait(timeout=2)
+
 #======= CONSUMIDORES =======#
 
 def crear_consumidor_kafka(ip, puerto, topic):
@@ -509,6 +599,8 @@ def escuchar_avisos_nuevo_fo(consumidor, productor, detener):
                     id_operador = campos[1]
 
                     print(f"[CENTRAL] Nuevo FO conectado: {id_operador}", flush=True)
+
+                    sincronizacion_completa.wait()
 
                     estaciones = BD.devolver_estaciones()
 
@@ -762,11 +854,23 @@ def main():
     hilo_nuevo_fo = None
     hilo_confirmaciones = None
     hilo_sockets = None
+    hilo_heartbeat = None
     hilo_kafka_engine = None
     
     """BASE DE DATOS"""
 
     BD.inicializar()
+
+    with bloqueo_sincronizacion:
+        estaciones_pendientes.update(
+            estacion[0] for estacion in BD.devolver_estaciones()
+        )
+        estaciones_reconciliadas.clear()
+
+        if not estaciones_pendientes:
+            sincronizacion_completa.set()
+        else:
+            sincronizacion_completa.clear()
 
     try:
     
@@ -778,6 +882,15 @@ def main():
         productor = crear_productor_kafka(config.kafka_host, config.kafka_port)
 
         print("[CENTRAL] Conexiones Kafka creadas.")
+
+        hilo_timeout_sincronizacion = threading.Thread(
+            target=esperar_fin_sincronizacion,
+            args=(10,),
+            name="hilo-timeout-sincronizacion",
+            daemon=True
+        )
+
+        hilo_timeout_sincronizacion.start()
 
         """SOCKETS"""
         hilo_sockets = threading.Thread(target=servidor_sockets, args=(config.socket_port, productor), daemon = True)
@@ -795,6 +908,9 @@ def main():
 
         hilo_confirmaciones = threading.Thread(target=escuchar_confirmaciones_fo, args=(consumidor_confirmaciones, detener),daemon=True)
         hilo_confirmaciones.start()
+
+        hilo_heartbeat = threading.Thread(target=enviar_heartbeat_central, args=(productor, detener), name="hilo-heartbeat", daemon=True)
+        hilo_heartbeat.start()
 
         print("[CENTRAL] Servidor iniciado.")
 
@@ -818,6 +934,9 @@ def main():
 
         if hilo_confirmaciones is not None:
             hilo_confirmaciones.join(timeout=3)
+
+        if hilo_heartbeat is not None:
+            hilo_heartbeat.join(timeout=3)
 
         if productor is not None:
             productor.close(timeout=5)

@@ -9,6 +9,7 @@ FORMAT = 'utf-8'
 gui = None
 fuera_servicio = threading.Event()
 estado_engine_actual = "DESCONECTADA"
+estado_riego_actual = None
 
 """SOCKETS"""
 
@@ -87,7 +88,7 @@ def comprobar_engine(ip_engine, puerto_engine, id_estacion, socket_engine):
                     f"[MONITOR][DESCONECTADA] No se puede conectar "
                     f"al Engine de {id_estacion}.", flush=True
                 )
-                return "DESCONECTADA", None
+                return "DESCONECTADA", None, None
 
             send(nuevo_socket, f"CONEXION_ENGINE#{id_estacion}")
             respuesta = recibir_msg(nuevo_socket).strip()
@@ -98,7 +99,7 @@ def comprobar_engine(ip_engine, puerto_engine, id_estacion, socket_engine):
                     f"[MONITOR][DESCONECTADA] Resupuesta de conexión "
                     f"inválida: {respuesta}", flush=True
                 )
-                return "DESCONECTADA", None
+                return "DESCONECTADA", None, None
 
             socket_engine = nuevo_socket
             log(f"[MONITOR][OK] Conectado al Engine de {id_estacion}.", flush=True)
@@ -107,18 +108,20 @@ def comprobar_engine(ip_engine, puerto_engine, id_estacion, socket_engine):
         send(socket_engine, f"COMPROBACION_ESTADO_WS#{id_estacion}")
         respuesta = recibir_msg(socket_engine).strip()
 
-        if respuesta == f"ESTADO_OK#{id_estacion}":
-            return "OK", socket_engine
+        if respuesta.startswith(f"ESTADO_OK#{id_estacion}#"):
+            partes = respuesta.split("#")
+            estado_riego = partes[2]
+            return "OK", socket_engine, estado_riego
         elif respuesta == f"KO#{id_estacion}":
             log(f"[MONITOR][FUGA] Engine de {id_estacion} responde KO.", flush=True)
-            return "FUGA", socket_engine
+            return "FUGA", socket_engine, None
 
         log(
             f"[MONITOR][DESCONECTADA] Respuesta inesperada: "
             f"{respuesta}", flush=True
         )
         socket_engine.close()
-        return "DESCONECTADA", None
+        return "DESCONECTADA", None, None
 
     except (socket.timeout, ConnectionRefusedError, OSError) as error:
         log(
@@ -126,7 +129,7 @@ def comprobar_engine(ip_engine, puerto_engine, id_estacion, socket_engine):
         )
         if socket_engine is not None:
             socket_engine.close()
-        return "DESCONECTADA", None    
+        return "DESCONECTADA", None, None    
 
 def conectar_central(ip, puerto, id_estacion, ubicacion):
     """Intenta conectar y registrar el Monitor en Central."""
@@ -179,15 +182,45 @@ def conectar_central(ip, puerto, id_estacion, ubicacion):
             cliente.close()
             time.sleep(3)
 
+def enviar_estado_actual(cliente, id_estacion):
+    estado = estado_riego_actual
+
+    if estado is None:
+        log(
+            f"[MONITOR][AVISO] No se puede comunicar "
+            f"el estado real de {id_estacion}."
+        )
+        return False
+
+    send(
+        cliente,
+        f"ESTADO_ACTUAL#{id_estacion}#{estado}"
+    )
+
+    respuesta = recibir_msg(cliente)
+
+    if respuesta == f"ESTADO_ACTUAL_OK#{id_estacion}":
+        log(
+            f"[MONITOR] Estado actual comunicado a Central: "
+            f"{estado}."
+        )
+        return True
+
+    log(
+        f"[MONITOR][ERROR] Central no confirmó el estado: "
+        f"{respuesta}"
+    )
+    return False
+
 def supervisar_engine(ip_engine, puerto_engine, id_estacion, detener):
     """Supervisa el Engine independientemente de la conexión con Central."""
-    global estado_engine_actual
+    global estado_engine_actual, estado_riego_actual
 
     socket_engine = None
     incidencia = None
 
     while not detener.is_set():
-        estado_engine, socket_engine = comprobar_engine(
+        estado_engine, socket_engine, estado_riego = comprobar_engine(
             ip_engine,
             puerto_engine,
             id_estacion,
@@ -195,6 +228,11 @@ def supervisar_engine(ip_engine, puerto_engine, id_estacion, detener):
         )
 
         estado_engine_actual = estado_engine
+
+        if estado_engine == "OK":
+            estado_riego_actual = estado_riego
+        else:
+            estado_riego_actual = None
 
         if estado_engine == "FUGA":
             if incidencia != "FUGA":
@@ -231,7 +269,7 @@ def supervisar_engine(ip_engine, puerto_engine, id_estacion, detener):
             gui.publicar_componentes("OK", "OK")
 
             if not fuera_servicio.is_set():
-                gui.publicar_estado("DISPONIBLE")
+                gui.publicar_estado(estado_riego)
 
             incidencia = None
 
@@ -247,7 +285,6 @@ def log(*args, **kwargs):
 
     if gui is not None:
         gui.publicar_mensaje(mensaje)
-
 
 def ejecutar_monitor():
     global estado_engine_actual
@@ -287,24 +324,42 @@ def ejecutar_monitor():
 
     try:
         hilo_engine.start()
+        while  not detener.is_set():
+            # La conexión con Central puede tardar.
+            # El hilo del Engine sigue funcionando mientras tanto.
+            cliente = conectar_central(
+                SERVER_CENTRAL,
+                PORT_CENTRAL,
+                ID_Estacion,
+                Ubicacion
+            )
 
-        # La conexión con Central puede tardar.
-        # El hilo del Engine sigue funcionando mientras tanto.
-        cliente = conectar_central(
-            SERVER_CENTRAL,
-            PORT_CENTRAL,
-            ID_Estacion,
-            Ubicacion
-        )
+            tiempo_espera = 0
 
-        hilo_central = threading.Thread(
-            target=escuchar_central,
-            args=(cliente, ID_Estacion),
-            daemon=True
-        )
+            while estado_riego_actual is None and tiempo_espera < 5 and not detener.is_set():
+                time.sleep(0.2)
+                tiempo_espera += 0.2
 
-        hilo_central.start()
+            if estado_riego_actual is not None:
+                enviar_estado_actual(cliente, ID_Estacion)
+            else:
+                print("[MONITOR] No se ha podido obtener el estado real del riego. ", flush=True)
 
+            hilo_central = threading.Thread(
+                target=escuchar_central,
+                args=(cliente, ID_Estacion),
+                daemon=True
+            )
+
+            hilo_central.start()
+
+            hilo_central.join()
+            cliente.close()
+
+            if not detener.is_set():
+                log("[Monitor] Intentando recuperar la conexión con Central...")
+                detener.wait(3)
+                
         while not detener.is_set():
             time.sleep(0.5)
 
@@ -338,7 +393,12 @@ def main():
 
     hilo_monitor.start()
 
-    gui.ejecutar()
+    try:
+        gui.ejecutar()
+    except KeyboardInterrupt:
+        log("\n[MONITOR] Cerrando estación...")
+
+        gui.root.destroy()
 
 if __name__ == "__main__":
     main()

@@ -131,3 +131,11 @@ def obtener_riegos_pendientes(id_estacion):
         return cursor.fetchall()
     finally:
         conexion.close()
+
+def obtener_estado_riego(id_estacion):
+    riegos_pendientes = obtener_riegos_pendientes(id_estacion)
+
+    if riegos_pendientes:
+        return "REGANDO"
+
+    return "DISPONIBLE"
