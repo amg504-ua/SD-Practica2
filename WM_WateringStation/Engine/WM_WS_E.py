@@ -291,15 +291,36 @@ def escuchar_ordenes(consumidor, productor, detener, mi_id_estacion):
                 estado_riego
             ) = riego
 
-            ejecutar_riego(
-                productor,
-                id_guardado,
-                operario_guardado,
-                estacion_guardada,
-                tiempo_objetivo,
-                tiempo_transcurrido,
-                volumen_acumulado
+            print(
+                f"[ENGINE][RECUPERACIÓN] Riego {id_guardado} interrumpido por la caída del Engine.", flush=True
             )
+
+            mensaje_interrupcion = (
+                    f"{id_guardado}#RIEGO_INTERRUMPIDO#"
+                    f"{operario_guardado}#{estacion_guardada}#"
+                    f"ENGINE_REINICIADO"
+            )
+
+            enviar_evento_engine(productor, mensaje_interrupcion)
+
+            # Generar el resumen con los datos guardados antes de la caída.
+            resumen = (
+                f"{id_guardado}#RESUMEN_RIEGO#"
+                f"{operario_guardado}#{estacion_guardada}#"
+                f"{tiempo_transcurrido}#{volumen_acumulado:.2f}"
+            )
+
+            enviar_evento_engine(productor, resumen)
+
+            # Marcar el riego como finalizado para que no vuelva a recuperarse.
+            engine_db.finalizar_riego(id_guardado, estacion_guardada)
+
+            print(
+                f"[ENGINE][RECUPERACIÓN] Resumen enviado. "
+                f"Duración: {tiempo_transcurrido} s; "
+                f"Volumen: {volumen_acumulado:.2f} litros.",
+                flush=True
+            )            
 
         while not detener.is_set():
             mensajes = consumidor.poll(timeout_ms=500)

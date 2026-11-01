@@ -26,7 +26,7 @@ def recibir_msg(socketC):
     return msg.strip()
 
 def escuchar_central(cliente, id_estacion):
-    global estacion_bloqueada
+    #global estacion_bloqueada
     while True:
         try:
             msg = recibir_msg(cliente)
@@ -70,9 +70,9 @@ def escuchar_central(cliente, id_estacion):
 
 #funcion para preguntar al engine cada segundo
 def comprobar_engine(ip_engine, puerto_engine, id_estacion, socket_engine):
-    global estacion_bloqueada
-    if estacion_bloqueada:
-        return "FUERA_DE_SERVICIO", socket_engine
+    #global estacion_bloqueada
+    #if estacion_bloqueada:
+    #    return "FUERA_DE_SERVICIO", socket_engine
     try:
         if socket_engine is None:
             #crear el socket y conectarse, ademas del timeout de dos segundos, si tarda mas fuera

@@ -513,7 +513,9 @@ def escuchar_avisos_nuevo_fo(consumidor, productor, detener):
                     estaciones = BD.devolver_estaciones()
 
                     for estacion in estaciones:
-                        id_estacion, ubicacion, estado = estacion
+                        id_estacion = estacion[0]
+                        ubicacion = estacion[1]
+                        estado = estacion[2]
 
                         enviar_estado_fo(productor, id_estacion, estado, ubicacion, id_operario=id_operador)
 
