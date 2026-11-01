@@ -50,6 +50,16 @@ def inicializar():
  
     creador.execute("UPDATE WATERING_STATIONS SET ESTADO = 'DESCONECTADA', caudal = 0.0, volumen = 0.0, operario = '-'")
 
+        # Crear la tabla de resúmenes pendientes de confirmación
+    creador.execute('''
+        CREATE TABLE IF NOT EXISTS PENDING_SUMMARIES (
+            id_peticion TEXT NOT NULL,
+            id_operario TEXT NOT NULL,
+            mensaje TEXT NOT NULL,
+            PRIMARY KEY (id_peticion, id_operario)
+        )
+    ''')
+
     conexion.commit()
     conexion.close()
     print("[BASE DE DATOS] Inicializada.")
@@ -149,3 +159,46 @@ def existe_estacion(id_estacion):
     conexion.close()
 
     return existe
+
+def guardar_resumen_pendiente(id_peticion, id_operario, mensaje):
+    """Guarda un resumen hasta que el FO confirme su recepción."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+
+    cursor.execute('''
+        INSERT OR IGNORE INTO PENDING_SUMMARIES
+        (id_peticion, id_operario, mensaje)
+        VALUES (?, ?, ?)
+    ''', (id_peticion, id_operario, mensaje))
+
+    conexion.commit()
+    conexion.close()
+
+def devolver_resumenes_pendientes(id_operario):
+    """Devuelve los resúmenes pendientes de un FO."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+
+    cursor.execute('''
+        SELECT mensaje
+        FROM PENDING_SUMMARIES
+        WHERE id_operario = ?
+    ''', (id_operario,))
+
+    resumenes = cursor.fetchall()
+    conexion.close()
+
+    return [resumen[0] for resumen in resumenes]
+
+def eliminar_resumen_pendiente(id_peticion, id_operario):
+    """Elimina un resumen cuando el FO confirma su recepción."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+
+    cursor.execute('''
+        DELETE FROM PENDING_SUMMARIES
+        WHERE id_peticion = ? AND id_operario = ?
+    ''', (id_peticion, id_operario))
+
+    conexion.commit()
+    conexion.close()
